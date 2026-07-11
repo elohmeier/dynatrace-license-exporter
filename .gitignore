@@ -1,0 +1,6 @@
+/coverage.out
+/dist/
+/dynatrace-license-exporter
+/.idea/
+/.vscode/
+.DS_Store

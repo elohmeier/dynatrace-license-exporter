@@ -1,0 +1,14 @@
+{
+  "extends": ["config:recommended"],
+  "labels": ["dependencies"],
+  "packageRules": [
+    {
+      "matchManagers": ["gomod"],
+      "groupName": "Go dependencies"
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions"
+    }
+  ]
+}

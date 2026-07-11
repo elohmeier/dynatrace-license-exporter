@@ -1,0 +1,14 @@
+{
+  "environments": [
+    {
+      "id": "environment-example-one",
+      "name": "Example One",
+      "token_file": "/run/secrets/dynatrace/environment-one-token"
+    },
+    {
+      "id": "environment-example-two",
+      "name": "Example Two",
+      "token_env": "DYNATRACE_EXAMPLE_TWO_TOKEN"
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+version: 2
+
+project_name: dynatrace-license-exporter
+
+builds:
+  - id: dynatrace-license-exporter
+    main: .
+    binary: dynatrace-license-exporter
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.build={{.ShortCommit}}
+
+archives:
+  - ids:
+      - dynatrace-license-exporter
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: checksums.txt
+
+source:
+  enabled: true
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+dockers_v2:
+  - images:
+      - ghcr.io/elohmeier/dynatrace-license-exporter
+    tags:
+      - "{{.Version}}"
+      - latest
+    platforms:
+      - linux/amd64
+      - linux/arm64

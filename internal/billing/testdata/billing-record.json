@@ -1,0 +1,57 @@
+{
+  "clusterUuid": "cluster-example",
+  "timeFrameStart": 1704067200000,
+  "timeFrameEnd": 1704070800000,
+  "environmentBillingEntries": [
+    {
+      "environmentUuid": "11111111-1111-1111-1111-111111111111",
+      "hostUsages": [
+        {
+          "osiId": 10001,
+          "hostName": "host-one.example.invalid",
+          "hostCategory": "PHYSICAL",
+          "hostMemoryBytes": 8589934592,
+          "passMemoryLimit": 0,
+          "infrastructureOnly": false,
+          "paas": false,
+          "hasContainers": true,
+          "premiumLogAnalytics": false
+        },
+        {
+          "osiId": 10002,
+          "hostName": "host-two.example.invalid",
+          "hostCategory": "VIRTUAL",
+          "hostMemoryBytes": 34359738368,
+          "passMemoryLimit": 0,
+          "infrastructureOnly": true,
+          "paas": true,
+          "hasContainers": false,
+          "premiumLogAnalytics": true
+        }
+      ],
+      "syntheticBillingUsage": [
+        {
+          "monitorTypeId": 1,
+          "testId": 20001,
+          "publicExecutions": 10,
+          "privateExecutions": 5
+        },
+        {
+          "monitorTypeId": 2,
+          "testId": 20002,
+          "publicExecutions": 2,
+          "privateExecutions": 1
+        }
+      ],
+      "davisDataUnits": [
+        {"pool": "Metrics", "total": 12.5},
+        {"pool": "Traces", "total": 25.0}
+      ],
+      "visits": 8,
+      "mobileSessions": 4,
+      "sessionReplays": 2,
+      "mobileSessionReplays": 1,
+      "totalRUMUserPropertiesUsed": 10
+    }
+  ]
+}
