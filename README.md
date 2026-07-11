@@ -3,7 +3,6 @@
 [![CI](https://github.com/elohmeier/dynatrace-license-exporter/actions/workflows/ci.yml/badge.svg)](https://github.com/elohmeier/dynatrace-license-exporter/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/elohmeier/dynatrace-license-exporter)](https://github.com/elohmeier/dynatrace-license-exporter/releases)
 [![GHCR](https://img.shields.io/badge/ghcr.io-dynatrace--license--exporter-blue)](https://github.com/elohmeier/dynatrace-license-exporter/pkgs/container/dynatrace-license-exporter)
-[![Go Report Card](https://goreportcard.com/badge/github.com/elohmeier/dynatrace-license-exporter)](https://goreportcard.com/report/github.com/elohmeier/dynatrace-license-exporter)
 [![Go Reference](https://pkg.go.dev/badge/github.com/elohmeier/dynatrace-license-exporter.svg)](https://pkg.go.dev/github.com/elohmeier/dynatrace-license-exporter)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
