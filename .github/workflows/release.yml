@@ -32,8 +32,8 @@ jobs:
       - name: Test with race detector and coverage
         run: |
           go test ./... -race -covermode=atomic -coverprofile=coverage.out
-          go tool cover -func=coverage.out | tee coverage.txt
-          coverage="$(awk '/^total:/ {gsub("%", "", $3); print $3}' coverage.txt)"
+          go tool cover -func=coverage.out | tee /tmp/coverage.txt
+          coverage="$(awk '/^total:/ {gsub("%", "", $3); print $3}' /tmp/coverage.txt)"
           awk -v coverage="$coverage" 'BEGIN { if (coverage + 0 < 80) { printf "coverage %.1f%% is below 80%%\n", coverage; exit 1 } }'
       - name: Build
         run: go build ./...
