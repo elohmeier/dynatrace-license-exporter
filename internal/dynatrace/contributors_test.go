@@ -55,7 +55,7 @@ func TestEntity(t *testing.T) {
 		if got := r.URL.Query().Get("entitySelector"); got != `entityId("HOST-EXAMPLE")` {
 			t.Errorf("selector = %q", got)
 		}
-		if got := r.URL.Query().Get("fields"); got != "properties,tags,managementZones" {
+		if got := r.URL.Query().Get("fields"); got != contributorEntityFields {
 			t.Errorf("fields = %q", got)
 		}
 		_, _ = fmt.Fprint(w, `{"entities":[{"entityId":"HOST-EXAMPLE","type":"HOST","displayName":"host.example.invalid","tags":[{"key":"team","value":"example"}],"managementZones":[{"id":"zone-one","name":"Example Zone"}],"properties":{"monitoringMode":"FULL_STACK"}}]}`)
@@ -71,6 +71,37 @@ func TestEntity(t *testing.T) {
 	}
 	if entity == nil || entity.DisplayName != "host.example.invalid" || entity.Properties["monitoringMode"] != "FULL_STACK" {
 		t.Fatalf("entity = %+v", entity)
+	}
+}
+
+func TestKubernetesRelationships(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/e/environment-example/api/v2/entities" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("entitySelector"); got != `entityId("CLOUD_APPLICATION_NAMESPACE-EXAMPLE")` {
+			t.Errorf("selector = %q", got)
+		}
+		if got := r.URL.Query().Get("fields"); got != kubernetesRelationshipFieldsByEntityType["CLOUD_APPLICATION_NAMESPACE"] {
+			t.Errorf("fields = %q", got)
+		}
+		_, _ = fmt.Fprint(w, `{"entities":[{"entityId":"CLOUD_APPLICATION_NAMESPACE-EXAMPLE","type":"CLOUD_APPLICATION_NAMESPACE","displayName":"namespace.example.invalid","toRelationships":{"isClusterOfNamespace":[{"id":"KUBERNETES_CLUSTER-EXAMPLE","type":"KUBERNETES_CLUSTER"}]}}]}`)
+	}))
+	defer server.Close()
+	client, err := NewClient(Config{BaseURL: server.URL, Token: "synthetic-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entities, err := client.KubernetesRelationships(context.Background(), "environment-example", "CLOUD_APPLICATION_NAMESPACE", []string{"CLOUD_APPLICATION_NAMESPACE-EXAMPLE"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entities) != 1 || entities[0].DisplayName != "namespace.example.invalid" || len(entities[0].ToRelationships["isClusterOfNamespace"]) != 1 {
+		t.Fatalf("entities = %+v", entities)
+	}
+	entities, err = client.KubernetesRelationships(context.Background(), "environment-example", "EXAMPLE", []string{"EXAMPLE-ONE"})
+	if err != nil || len(entities) != 0 {
+		t.Fatalf("unsupported type entities=%+v err=%v", entities, err)
 	}
 }
 

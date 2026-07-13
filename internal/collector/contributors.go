@@ -17,10 +17,28 @@ import (
 
 const contributorsCollector = "contributors"
 
+const unattributedDimension = "unattributed"
+
+var (
+	dduPools                          = []string{"events", "log", "metrics", "traces"}
+	kubernetesClusterRelationshipKeys = []string{
+		"isClusterOfHost", "isClusterOfService", "isClusterOfCa", "isClusterOfCai", "isClusterOfNamespace",
+	}
+	kubernetesNamespaceRelationshipKeys = []string{
+		"isNamespaceOfService", "isNamespaceOfCa", "isNamespaceOfCai", "isNamespaceOfPg",
+	}
+	kubernetesRelationshipEntityTypes = map[string]bool{
+		"HOST": true, "SERVICE": true, "CLOUD_APPLICATION": true, "CLOUD_APPLICATION_INSTANCE": true,
+		"CLOUD_APPLICATION_NAMESPACE": true, "PROCESS_GROUP": true,
+	}
+)
+
 // ContributorClient is the environment API surface used by the collector.
 type ContributorClient interface {
 	QueryMetric(ctx context.Context, environmentID, selector string, from, to time.Time) ([]dynatrace.MetricDatum, error)
 	Entity(ctx context.Context, environmentID, entityID string) (*dynatrace.Entity, error)
+	KubernetesRelationships(ctx context.Context, environmentID, entityType string, entityIDs []string) ([]dynatrace.Entity, error)
+	KubernetesClusters(ctx context.Context, environmentID string, entityIDs []string) ([]dynatrace.Entity, error)
 }
 
 // ContributorTarget binds a generic environment configuration to its API client.
@@ -30,10 +48,12 @@ type ContributorTarget struct {
 }
 
 type contributorSnapshot struct {
-	WindowStart  time.Time
-	WindowEnd    time.Time
-	Contributors []contributor
-	Entities     map[string]entityMetadata
+	WindowStart         time.Time
+	WindowEnd           time.Time
+	Contributors        []contributor
+	ReportedMetricUsage []reportedMetricUsage
+	DDUPools            []dduPoolUsage
+	Entities            map[string]entityMetadata
 }
 
 type contributor struct {
@@ -48,15 +68,37 @@ type contributor struct {
 	Value         float64
 }
 
+type reportedMetricUsage struct {
+	EnvironmentID string
+	Environment   string
+	MetricKey     string
+	Value         float64
+}
+
+type dduPoolUsage struct {
+	EnvironmentID string
+	Environment   string
+	Pool          string
+	Total         float64
+	Coverage      float64
+}
+
+type kubernetesClusterMetadata struct {
+	Name         string
+	Distribution string
+}
+
 type entityMetadata struct {
-	EnvironmentID   string
-	Environment     string
-	ID              string
-	Name            string
-	Type            string
-	ManagementZones []string
-	Tags            map[string][]string
-	Attributes      map[string]string
+	EnvironmentID        string
+	Environment          string
+	ID                   string
+	Name                 string
+	Type                 string
+	ManagementZones      []string
+	Tags                 map[string][]string
+	Attributes           map[string]string
+	KubernetesClusters   map[string]kubernetesClusterMetadata
+	KubernetesNamespaces map[string]string
 }
 
 type querySpec struct {
@@ -102,10 +144,15 @@ type contributorDescriptors struct {
 	hostUnits           *prometheus.Desc
 	demUnits            *prometheus.Desc
 	davisDataUnits      *prometheus.Desc
+	reportedMetricDDU   *prometheus.Desc
+	dduWindow           *prometheus.Desc
+	dduCoverage         *prometheus.Desc
 	entityInfo          *prometheus.Desc
 	entityZoneInfo      *prometheus.Desc
 	entityTagInfo       *prometheus.Desc
 	entityAttributeInfo *prometheus.Desc
+	entityClusterInfo   *prometheus.Desc
+	entityNamespaceInfo *prometheus.Desc
 }
 
 // ContributorStatus is returned by the contributor debug endpoint.
@@ -158,11 +205,16 @@ func NewContributorExporter(cfg config.Config, targets []ContributorTarget, logg
 			windowDuration:      prometheus.NewDesc(namespace+"_license_contributor_window_seconds", "Duration of the rolling contributor query window.", labels(), nil),
 			hostUnits:           prometheus.NewDesc(namespace+"_license_contributor_host_units", "Host-unit usage returned by Dynatrace for the rolling contributor window.", labels("environment_id", "environment", "monitoring_mode", "entity_id", "entity_name"), nil),
 			demUnits:            prometheus.NewDesc(namespace+"_license_contributor_dem_units", "DEM usage returned by Dynatrace for the rolling contributor window.", labels("environment_id", "environment", "source", "entity_id", "entity_name"), nil),
-			davisDataUnits:      prometheus.NewDesc(namespace+"_license_contributor_davis_data_units", "Davis data units returned by Dynatrace for the rolling contributor window.", labels("environment_id", "environment", "pool", "dimension_type", "dimension_id", "dimension_name"), nil),
+			davisDataUnits:      prometheus.NewDesc(namespace+"_license_contributor_davis_data_units", "Billed Davis data units attributed by Dynatrace to top monitored entities or the explicit unattributed bucket for the rolling contributor window.", labels("environment_id", "environment", "pool", "dimension_type", "dimension_id", "dimension_name"), nil),
+			reportedMetricDDU:   prometheus.NewDesc(namespace+"_license_reported_metric_davis_data_units", "Raw metric Davis data units reported by Dynatrace before host-unit included DDUs are deducted; this is not billed consumption.", labels("environment_id", "environment", "metric_key"), nil),
+			dduWindow:           prometheus.NewDesc(namespace+"_license_contributor_window_davis_data_units", "Total billed Davis data units returned by Dynatrace for the rolling contributor window.", labels("environment_id", "environment", "pool"), nil),
+			dduCoverage:         prometheus.NewDesc(namespace+"_license_contributor_davis_data_units_coverage_ratio", "Fraction of the rolling billed pool total represented by exported top entity and unattributed contributor rows.", labels("environment_id", "environment", "pool"), nil),
 			entityInfo:          prometheus.NewDesc(namespace+"_entity_info", "Metadata for an entity referenced by contributor metrics.", labels("environment_id", "environment", "entity_id", "entity_name", "entity_type"), nil),
 			entityZoneInfo:      prometheus.NewDesc(namespace+"_entity_management_zone_info", "Management-zone membership for a contributor entity.", labels("environment_id", "environment", "entity_id", "management_zone"), nil),
 			entityTagInfo:       prometheus.NewDesc(namespace+"_entity_tag_info", "Allow-listed tag on a contributor entity.", labels("environment_id", "environment", "entity_id", "key", "value"), nil),
 			entityAttributeInfo: prometheus.NewDesc(namespace+"_entity_attribute_info", "Selected platform attribute on a contributor entity.", labels("environment_id", "environment", "entity_id", "attribute", "value"), nil),
+			entityClusterInfo:   prometheus.NewDesc(namespace+"_entity_kubernetes_cluster_info", "Kubernetes cluster related to a contributor entity.", labels("environment_id", "environment", "entity_id", "kubernetes_cluster_entity_id", "kubernetes_cluster", "kubernetes_distribution"), nil),
+			entityNamespaceInfo: prometheus.NewDesc(namespace+"_entity_kubernetes_namespace_info", "Kubernetes namespace related to a contributor entity.", labels("environment_id", "environment", "entity_id", "kubernetes_namespace_entity_id", "kubernetes_namespace"), nil),
 		},
 	}
 }
@@ -245,30 +297,59 @@ func (e *ContributorExporter) buildSnapshot(ctx context.Context, from, to time.T
 	snapshot := &contributorSnapshot{WindowStart: from, WindowEnd: to, Entities: make(map[string]entityMetadata)}
 	for _, target := range e.targets {
 		entityIDs := make(map[string]bool)
+		poolTotals := make(map[string]float64, len(dduPools))
+		poolCovered := make(map[string]float64, len(dduPools))
 		for _, spec := range contributorQuerySpecs(e.cfg.ContributorLimit) {
 			data, err := target.Client.QueryMetric(ctx, target.Environment.ID, spec.Selector, from, to)
 			if err != nil {
 				return nil, fmt.Errorf("environment %q query %s: %w", target.Environment.ID, spec.DimensionType, err)
 			}
+			switch spec.Family {
+			case "ddu_total":
+				for _, datum := range data {
+					poolTotals[spec.Subtype] += datum.Value
+				}
+				continue
+			case "reported_metric_ddu":
+				for _, datum := range data {
+					if metricKey := datum.Dimensions[spec.DimensionKey]; metricKey != "" {
+						snapshot.ReportedMetricUsage = append(snapshot.ReportedMetricUsage, reportedMetricUsage{
+							EnvironmentID: target.Environment.ID, Environment: target.Environment.Name,
+							MetricKey: metricKey, Value: datum.Value,
+						})
+					}
+				}
+				continue
+			}
 			for _, datum := range data {
 				id := datum.Dimensions[spec.DimensionKey]
 				name := datum.Dimensions[spec.NameKey]
-				if name == "" {
-					name = id
-				}
+				dimensionType, id, name := contributorDimension(spec, id, name)
 				row := contributor{
 					Family: spec.Family, Subtype: spec.Subtype, EnvironmentID: target.Environment.ID,
-					Environment: target.Environment.Name, DimensionType: spec.DimensionType,
+					Environment: target.Environment.Name, DimensionType: dimensionType,
 					DimensionID: id, DimensionName: name, Value: datum.Value,
 				}
-				if spec.Entity && id != "" {
+				if spec.Entity && id != unattributedDimension {
 					row.EntityID = id
 					entityIDs[id] = true
 				}
 				snapshot.Contributors = append(snapshot.Contributors, row)
+				if spec.Family == "ddu" {
+					poolCovered[spec.Subtype] += datum.Value
+				}
 			}
 		}
-		for key, metadata := range e.fetchEntities(ctx, target, entityIDs) {
+		for _, pool := range dduPools {
+			total := poolTotals[pool]
+			snapshot.DDUPools = append(snapshot.DDUPools, dduPoolUsage{
+				EnvironmentID: target.Environment.ID, Environment: target.Environment.Name,
+				Pool: pool, Total: total, Coverage: coverageRatio(poolCovered[pool], total),
+			})
+		}
+		entities := e.fetchEntities(ctx, target, entityIDs)
+		e.enrichKubernetesParents(ctx, target, entities)
+		for key, metadata := range entities {
 			snapshot.Entities[key] = metadata
 		}
 	}
@@ -276,7 +357,42 @@ func (e *ContributorExporter) buildSnapshot(ctx context.Context, from, to time.T
 		a, b := snapshot.Contributors[i], snapshot.Contributors[j]
 		return a.EnvironmentID+a.Family+a.Subtype+a.DimensionType+a.DimensionID < b.EnvironmentID+b.Family+b.Subtype+b.DimensionType+b.DimensionID
 	})
+	sort.Slice(snapshot.ReportedMetricUsage, func(i, j int) bool {
+		a, b := snapshot.ReportedMetricUsage[i], snapshot.ReportedMetricUsage[j]
+		return a.EnvironmentID+a.MetricKey < b.EnvironmentID+b.MetricKey
+	})
+	sort.Slice(snapshot.DDUPools, func(i, j int) bool {
+		a, b := snapshot.DDUPools[i], snapshot.DDUPools[j]
+		return a.EnvironmentID+a.Pool < b.EnvironmentID+b.Pool
+	})
 	return snapshot, nil
+}
+
+func contributorDimension(spec querySpec, id, name string) (string, string, string) {
+	if spec.Family == "ddu" && spec.Entity && id == "" {
+		return unattributedDimension, unattributedDimension, unattributedDimension
+	}
+	if name == "" {
+		name = id
+	}
+	return spec.DimensionType, id, name
+}
+
+func coverageRatio(covered, total float64) float64 {
+	if total <= 0 {
+		if covered <= 0 {
+			return 1
+		}
+		return 0
+	}
+	ratio := covered / total
+	if ratio < 0 {
+		return 0
+	}
+	if ratio > 1 {
+		return 1
+	}
+	return ratio
 }
 
 func (e *ContributorExporter) fetchEntities(ctx context.Context, target ContributorTarget, ids map[string]bool) map[string]entityMetadata {
@@ -310,7 +426,7 @@ func (e *ContributorExporter) fetchEntities(ctx context.Context, target Contribu
 			}
 			metadata := summarizeEntity(target.Environment, *entity, e.cfg.EntityTagKeys)
 			mu.Lock()
-			result[target.Environment.ID+":"+id] = metadata
+			result[entityKey(target.Environment.ID, id)] = metadata
 			mu.Unlock()
 		}()
 	}
@@ -318,10 +434,180 @@ func (e *ContributorExporter) fetchEntities(ctx context.Context, target Contribu
 	return result
 }
 
+func (e *ContributorExporter) enrichKubernetesParents(ctx context.Context, target ContributorTarget, entities map[string]entityMetadata) {
+	type namespaceMetadata struct {
+		name       string
+		clusterIDs map[string]bool
+	}
+	e.fetchKubernetesRelationships(ctx, target, entities)
+	namespaces := make(map[string]namespaceMetadata)
+	requestedNamespaces := make(map[string]bool)
+	clusterDetails := make(map[string]kubernetesClusterMetadata)
+
+	for _, metadata := range entities {
+		for namespaceID := range metadata.KubernetesNamespaces {
+			requestedNamespaces[namespaceID] = true
+		}
+		if metadata.Type == "CLOUD_APPLICATION_NAMESPACE" {
+			clusters := make(map[string]bool, len(metadata.KubernetesClusters))
+			for clusterID := range metadata.KubernetesClusters {
+				clusters[clusterID] = true
+			}
+			namespaces[metadata.ID] = namespaceMetadata{name: metadata.Name, clusterIDs: clusters}
+		}
+		if metadata.Type == "KUBERNETES_CLUSTER" {
+			if detail, ok := metadata.KubernetesClusters[metadata.ID]; ok {
+				clusterDetails[metadata.ID] = detail
+			}
+		}
+	}
+
+	missingNamespaces := make(map[string]bool)
+	for namespaceID := range requestedNamespaces {
+		if _, ok := namespaces[namespaceID]; !ok {
+			missingNamespaces[namespaceID] = true
+		}
+	}
+	if len(missingNamespaces) > 0 {
+		related, err := target.Client.KubernetesRelationships(ctx, target.Environment.ID, "CLOUD_APPLICATION_NAMESPACE", sortedKeys(missingNamespaces))
+		if err != nil {
+			if e.logger != nil {
+				e.logger.Warn("contributor Kubernetes namespace enrichment failed", "environment_id", target.Environment.ID, "err", err)
+			}
+		} else {
+			for _, entity := range related {
+				if !missingNamespaces[entity.EntityID] || entity.Type != "CLOUD_APPLICATION_NAMESPACE" {
+					continue
+				}
+				clusters := make(map[string]bool)
+				addRelationshipIDs(clusters, entity, kubernetesClusterRelationshipKeys, "KUBERNETES_CLUSTER")
+				name := entity.DisplayName
+				if name == "" {
+					name = entity.EntityID
+				}
+				namespaces[entity.EntityID] = namespaceMetadata{name: name, clusterIDs: clusters}
+			}
+		}
+	}
+
+	for key, metadata := range entities {
+		for namespaceID := range metadata.KubernetesNamespaces {
+			namespace, ok := namespaces[namespaceID]
+			if !ok {
+				metadata.KubernetesNamespaces[namespaceID] = namespaceID
+				continue
+			}
+			metadata.KubernetesNamespaces[namespaceID] = namespace.name
+			for clusterID := range namespace.clusterIDs {
+				if _, ok := metadata.KubernetesClusters[clusterID]; !ok {
+					metadata.KubernetesClusters[clusterID] = kubernetesClusterMetadata{}
+				}
+			}
+		}
+		entities[key] = metadata
+	}
+
+	missingClusters := make(map[string]bool)
+	for _, metadata := range entities {
+		for clusterID := range metadata.KubernetesClusters {
+			if _, ok := clusterDetails[clusterID]; !ok {
+				missingClusters[clusterID] = true
+			}
+		}
+	}
+	if len(missingClusters) > 0 {
+		clusters, err := target.Client.KubernetesClusters(ctx, target.Environment.ID, sortedKeys(missingClusters))
+		if err != nil {
+			if e.logger != nil {
+				e.logger.Warn("contributor Kubernetes cluster enrichment failed", "environment_id", target.Environment.ID, "err", err)
+			}
+		} else {
+			for _, cluster := range clusters {
+				if !missingClusters[cluster.EntityID] || cluster.Type != "KUBERNETES_CLUSTER" {
+					continue
+				}
+				name := cluster.DisplayName
+				if name == "" {
+					name = cluster.EntityID
+				}
+				distribution := stringProperty(cluster.Properties, "kubernetesDistribution")
+				if distribution == "" {
+					distribution = "unknown"
+				}
+				clusterDetails[cluster.EntityID] = kubernetesClusterMetadata{Name: name, Distribution: distribution}
+			}
+		}
+	}
+
+	for key, metadata := range entities {
+		for clusterID := range metadata.KubernetesClusters {
+			detail, ok := clusterDetails[clusterID]
+			if !ok {
+				detail = kubernetesClusterMetadata{Name: clusterID, Distribution: "unknown"}
+			}
+			metadata.KubernetesClusters[clusterID] = detail
+		}
+		entities[key] = metadata
+	}
+}
+
+func (e *ContributorExporter) fetchKubernetesRelationships(ctx context.Context, target ContributorTarget, entities map[string]entityMetadata) {
+	idsByType := make(map[string]map[string]bool)
+	for _, metadata := range entities {
+		if !kubernetesRelationshipEntityTypes[metadata.Type] {
+			continue
+		}
+		if idsByType[metadata.Type] == nil {
+			idsByType[metadata.Type] = make(map[string]bool)
+		}
+		idsByType[metadata.Type][metadata.ID] = true
+	}
+	for _, entityType := range sortedKeys(idsByType) {
+		related, err := target.Client.KubernetesRelationships(ctx, target.Environment.ID, entityType, sortedKeys(idsByType[entityType]))
+		if err != nil {
+			if e.logger != nil {
+				e.logger.Warn("contributor Kubernetes relationship enrichment failed", "environment_id", target.Environment.ID, "entity_type", entityType, "err", err)
+			}
+			continue
+		}
+		for _, entity := range related {
+			key := entityKey(target.Environment.ID, entity.EntityID)
+			metadata, ok := entities[key]
+			if !ok || metadata.Type != entityType {
+				continue
+			}
+			addRelationshipIDs(metadata.KubernetesClusters, entity, kubernetesClusterRelationshipKeys, "KUBERNETES_CLUSTER")
+			addRelationshipIDs(metadata.KubernetesNamespaces, entity, kubernetesNamespaceRelationshipKeys, "CLOUD_APPLICATION_NAMESPACE")
+			entities[key] = metadata
+		}
+	}
+}
+
 func summarizeEntity(environment config.Environment, entity dynatrace.Entity, tagKeys []string) entityMetadata {
 	metadata := entityMetadata{
 		EnvironmentID: environment.ID, Environment: environment.Name, ID: entity.EntityID,
 		Name: entity.DisplayName, Type: entity.Type, Tags: make(map[string][]string), Attributes: make(map[string]string),
+		KubernetesClusters: make(map[string]kubernetesClusterMetadata), KubernetesNamespaces: make(map[string]string),
+	}
+	addRelationshipIDs(metadata.KubernetesClusters, entity, kubernetesClusterRelationshipKeys, "KUBERNETES_CLUSTER")
+	addRelationshipIDs(metadata.KubernetesNamespaces, entity, kubernetesNamespaceRelationshipKeys, "CLOUD_APPLICATION_NAMESPACE")
+	if entity.Type == "KUBERNETES_CLUSTER" && entity.EntityID != "" {
+		distribution := stringProperty(entity.Properties, "kubernetesDistribution")
+		if distribution == "" {
+			distribution = "unknown"
+		}
+		name := entity.DisplayName
+		if name == "" {
+			name = entity.EntityID
+		}
+		metadata.KubernetesClusters[entity.EntityID] = kubernetesClusterMetadata{Name: name, Distribution: distribution}
+	}
+	if entity.Type == "CLOUD_APPLICATION_NAMESPACE" && entity.EntityID != "" {
+		name := entity.DisplayName
+		if name == "" {
+			name = entity.EntityID
+		}
+		metadata.KubernetesNamespaces[entity.EntityID] = name
 	}
 	allowed := make(map[string]bool, len(tagKeys))
 	for _, key := range tagKeys {
@@ -345,6 +631,18 @@ func summarizeEntity(environment config.Environment, entity dynatrace.Entity, ta
 		metadata.Attributes[key] = value
 	}
 	return metadata
+}
+
+func addRelationshipIDs[T any](target map[string]T, entity dynatrace.Entity, keys []string, expectedType string) {
+	var zero T
+	for _, relationshipKey := range keys {
+		for _, relationship := range entity.ToRelationships[relationshipKey] {
+			if relationship.ID == "" || relationship.Type != expectedType {
+				continue
+			}
+			target[relationship.ID] = zero
+		}
+	}
 }
 
 func selectedEntityAttributes(properties map[string]any) map[string]string {
@@ -435,6 +733,13 @@ func (e *ContributorExporter) Collect(ch chan<- prometheus.Metric) {
 	e.emit(ch, e.desc.windowStart, prometheus.GaugeValue, float64(snapshot.WindowStart.Unix()))
 	e.emit(ch, e.desc.windowEnd, prometheus.GaugeValue, float64(snapshot.WindowEnd.Unix()))
 	e.emit(ch, e.desc.windowDuration, prometheus.GaugeValue, snapshot.WindowEnd.Sub(snapshot.WindowStart).Seconds())
+	for _, pool := range snapshot.DDUPools {
+		e.emit(ch, e.desc.dduWindow, prometheus.GaugeValue, pool.Total, pool.EnvironmentID, pool.Environment, pool.Pool)
+		e.emit(ch, e.desc.dduCoverage, prometheus.GaugeValue, pool.Coverage, pool.EnvironmentID, pool.Environment, pool.Pool)
+	}
+	for _, row := range snapshot.ReportedMetricUsage {
+		e.emit(ch, e.desc.reportedMetricDDU, prometheus.GaugeValue, row.Value, row.EnvironmentID, row.Environment, row.MetricKey)
+	}
 	for _, row := range snapshot.Contributors {
 		switch row.Family {
 		case "host_units":
@@ -459,6 +764,13 @@ func (e *ContributorExporter) Collect(ch chan<- prometheus.Metric) {
 		for _, attribute := range sortedKeys(entity.Attributes) {
 			e.emit(ch, e.desc.entityAttributeInfo, prometheus.GaugeValue, 1, entity.EnvironmentID, entity.Environment, entity.ID, attribute, entity.Attributes[attribute])
 		}
+		for _, clusterID := range sortedKeys(entity.KubernetesClusters) {
+			cluster := entity.KubernetesClusters[clusterID]
+			e.emit(ch, e.desc.entityClusterInfo, prometheus.GaugeValue, 1, entity.EnvironmentID, entity.Environment, entity.ID, clusterID, cluster.Name, cluster.Distribution)
+		}
+		for _, namespaceID := range sortedKeys(entity.KubernetesNamespaces) {
+			e.emit(ch, e.desc.entityNamespaceInfo, prometheus.GaugeValue, 1, entity.EnvironmentID, entity.Environment, entity.ID, namespaceID, entity.KubernetesNamespaces[namespaceID])
+		}
 	}
 }
 
@@ -471,8 +783,9 @@ func (e *ContributorExporter) allDescriptors() []*prometheus.Desc {
 	return []*prometheus.Desc{
 		e.desc.collectorUp, e.desc.refreshTotal, e.desc.refreshErrors, e.desc.refreshDuration, e.desc.lastAttempt,
 		e.desc.lastSuccess, e.desc.cacheAge, e.desc.cacheStale, e.desc.windowStart, e.desc.windowEnd,
-		e.desc.windowDuration, e.desc.hostUnits, e.desc.demUnits, e.desc.davisDataUnits, e.desc.entityInfo,
-		e.desc.entityZoneInfo, e.desc.entityTagInfo, e.desc.entityAttributeInfo,
+		e.desc.windowDuration, e.desc.hostUnits, e.desc.demUnits, e.desc.davisDataUnits, e.desc.reportedMetricDDU,
+		e.desc.dduWindow, e.desc.dduCoverage, e.desc.entityInfo, e.desc.entityZoneInfo, e.desc.entityTagInfo,
+		e.desc.entityAttributeInfo, e.desc.entityClusterInfo, e.desc.entityNamespaceInfo,
 	}
 }
 
@@ -486,14 +799,15 @@ func contributorQuerySpecs(limit int) []querySpec {
 		{"dem_units", "browser", "synthetic_test", "dt.entity.synthetic_test", "dt.entity.synthetic_test.name", true, withLimit(`builtin:billing.synthetic.actions.usage_by_browser_monitor:splitBy("dt.entity.synthetic_test"):sum:sort(value(sum,descending)):limit(%d):names`)},
 		{"dem_units", "http", "http_check", "dt.entity.http_check", "dt.entity.http_check.name", true, withLimit(`builtin:billing.synthetic.requests.usage_by_http_monitor:splitBy("dt.entity.http_check"):sum:sort(value(sum,descending)):limit(%d):names`)},
 		{"dem_units", "rum_web", "application", "dt.entity.application", "dt.entity.application.name", true, withLimit(`builtin:billing.real_user_monitoring.web.session.usage_by_app:splitBy("dt.entity.application"):sum:sort(value(sum,descending)):limit(%d):names`)},
-		{"ddu", "metrics", "metric_key", "Metric Key", "Metric Key", false, withLimit(`builtin:billing.ddu.metrics.byMetric:splitBy("Metric Key"):sum:sort(value(sum,descending)):limit(%d)`)},
+		{"reported_metric_ddu", "metrics", "metric_key", "Metric Key", "Metric Key", false, withLimit(`builtin:billing.ddu.metrics.byMetric:splitBy("Metric Key"):sum:sort(value(sum,descending)):limit(%d)`)},
 		{"ddu", "metrics", "entity", "dt.entity.monitored_entity", "dt.entity.monitored_entity.name", true, withLimit(`builtin:billing.ddu.metrics.byEntity:splitBy("dt.entity.monitored_entity"):sum:sort(value(sum,descending)):limit(%d):names`)},
 		{"ddu", "log", "entity", "dt.entity.monitored_entity", "dt.entity.monitored_entity.name", true, withLimit(`builtin:billing.ddu.log.byEntity:splitBy("dt.entity.monitored_entity"):sum:sort(value(sum,descending)):limit(%d):names`)},
-		{"ddu", "log", "description", "Description", "Description", false, withLimit(`builtin:billing.ddu.log.byDescription:splitBy("Description"):sum:sort(value(sum,descending)):limit(%d)`)},
 		{"ddu", "traces", "entity", "dt.entity.monitored_entity", "dt.entity.monitored_entity.name", true, withLimit(`builtin:billing.ddu.traces.byEntity:splitBy("dt.entity.monitored_entity"):sum:sort(value(sum,descending)):limit(%d):names`)},
-		{"ddu", "traces", "span_kind", "Description", "Description", false, withLimit(`builtin:billing.ddu.traces.byDescription:splitBy("Description"):sum:sort(value(sum,descending)):limit(%d)`)},
 		{"ddu", "events", "entity", "dt.entity.monitored_entity", "dt.entity.monitored_entity.name", true, withLimit(`builtin:billing.ddu.events.byEntity:splitBy("dt.entity.monitored_entity"):sum:sort(value(sum,descending)):limit(%d):names`)},
-		{"ddu", "events", "description", "Description", "Description", false, withLimit(`builtin:billing.ddu.events.byDescription:splitBy("Description"):sum:sort(value(sum,descending)):limit(%d)`)},
+		{"ddu_total", "metrics", "total", "", "", false, `builtin:billing.ddu.metrics.total`},
+		{"ddu_total", "log", "total", "", "", false, `builtin:billing.ddu.log.total`},
+		{"ddu_total", "traces", "total", "", "", false, `builtin:billing.ddu.traces.total`},
+		{"ddu_total", "events", "total", "", "", false, `builtin:billing.ddu.events.total`},
 	}
 }
 

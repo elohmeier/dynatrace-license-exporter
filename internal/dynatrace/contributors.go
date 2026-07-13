@@ -17,7 +17,17 @@ const (
 	maxEntityPages          = 100
 	maxEntitySelectorLength = 2000
 	entityPageSize          = 100
+	contributorEntityFields = "properties,tags,managementZones"
 )
+
+var kubernetesRelationshipFieldsByEntityType = map[string]string{
+	"HOST":                        "toRelationships.isClusterOfHost",
+	"SERVICE":                     "toRelationships.isClusterOfService,toRelationships.isNamespaceOfService",
+	"CLOUD_APPLICATION":           "toRelationships.isClusterOfCa,toRelationships.isNamespaceOfCa",
+	"CLOUD_APPLICATION_INSTANCE":  "toRelationships.isClusterOfCai,toRelationships.isNamespaceOfCai",
+	"CLOUD_APPLICATION_NAMESPACE": "toRelationships.isClusterOfNamespace",
+	"PROCESS_GROUP":               "toRelationships.isNamespaceOfPg",
+}
 
 // MetricDatum is one dimension tuple returned by a Metrics API query.
 type MetricDatum struct {
@@ -117,7 +127,7 @@ func (c *Client) Entity(ctx context.Context, environmentID, entityID string) (*E
 	selector := fmt.Sprintf("entityId(%s)", strconv.Quote(entityID))
 	query := url.Values{
 		"entitySelector": []string{selector},
-		"fields":         []string{"properties,tags,managementZones"},
+		"fields":         []string{contributorEntityFields},
 	}
 	path := "/e/" + url.PathEscape(environmentID) + "/api/v2/entities"
 	var response entitiesResponse
@@ -128,6 +138,16 @@ func (c *Client) Entity(ctx context.Context, environmentID, entityID string) (*E
 		return nil, nil
 	}
 	return &response.Entities[0], nil
+}
+
+// KubernetesRelationships fetches the type-specific Kubernetes parent
+// relationships used to enrich contributor entities.
+func (c *Client) KubernetesRelationships(ctx context.Context, environmentID, entityType string, entityIDs []string) ([]Entity, error) {
+	fields := kubernetesRelationshipFieldsByEntityType[entityType]
+	if fields == "" {
+		return nil, nil
+	}
+	return c.entities(ctx, environmentID, entityIDs, fields)
 }
 
 // Entities fetches display names and Kubernetes-cluster relationships for hosts.

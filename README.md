@@ -17,8 +17,8 @@ snapshot; `/readyz` reports whether that snapshot is still fresh.
 
 An optional contributor module queries environment-level billing metrics to
 identify the largest HU, DEM, and DDU contributors and enriches entity-backed
-rows with names, management zones, selected platform attributes, and
-operator-allow-listed tags.
+rows with names, management zones, selected platform attributes, Kubernetes
+namespace and cluster relationships, and operator-allow-listed tags.
 
 When environment API clients are configured, current per-host billing metrics
 are also enriched with Dynatrace host display names and Kubernetes cluster
@@ -269,10 +269,29 @@ Optional rolling contributor metrics:
 - `dynatrace_license_contributor_host_units{environment_id,environment,monitoring_mode,entity_id,entity_name}`
 - `dynatrace_license_contributor_dem_units{environment_id,environment,source,entity_id,entity_name}`
 - `dynatrace_license_contributor_davis_data_units{environment_id,environment,pool,dimension_type,dimension_id,dimension_name}`
+- `dynatrace_license_contributor_window_davis_data_units{environment_id,environment,pool}`
+- `dynatrace_license_contributor_davis_data_units_coverage_ratio{environment_id,environment,pool}`
+- `dynatrace_license_reported_metric_davis_data_units{environment_id,environment,metric_key}`
 - `dynatrace_entity_info{environment_id,environment,entity_id,entity_name,entity_type}`
 - `dynatrace_entity_management_zone_info{environment_id,environment,entity_id,management_zone}`
 - `dynatrace_entity_tag_info{environment_id,environment,entity_id,key,value}`
 - `dynatrace_entity_attribute_info{environment_id,environment,entity_id,attribute,value}`
+- `dynatrace_entity_kubernetes_cluster_info{environment_id,environment,entity_id,kubernetes_cluster_entity_id,kubernetes_cluster,kubernetes_distribution}`
+- `dynatrace_entity_kubernetes_namespace_info{environment_id,environment,entity_id,kubernetes_namespace_entity_id,kubernetes_namespace}`
+
+DDU contributor rows are an additive, top-N subset of billed pool usage.
+`dimension_type="entity"` identifies an attributed monitored entity, while
+`dimension_type="unattributed"` is the explicit Dynatrace null-entity bucket.
+The coverage ratio reports how much of the matching rolling pool total is
+represented by the exported rows. Dynatrace's span-kind, log-description, and
+event-description breakdowns are intentionally not exported because they are
+categorical alternatives to entity attribution, not additional contributors.
+
+Per-metric-key values are exported separately as
+`dynatrace_license_reported_metric_davis_data_units`. They describe raw metric
+traffic before host-unit included DDUs are deducted and can therefore be much
+higher than billed metrics-pool consumption. Do not use them for chargeback or
+sum them with billed contributor rows.
 
 The contributor collector runs independently from the cluster archive
 collector and reports its own `collector="contributors"` cache and refresh
@@ -331,7 +350,36 @@ Highest contributors in the configured rolling contributor window:
 ```promql
 topk(20, dynatrace_license_contributor_host_units)
 topk(20, dynatrace_license_contributor_dem_units)
-topk(20, dynatrace_license_contributor_davis_data_units)
+topk(20, dynatrace_license_contributor_davis_data_units{dimension_type="entity"})
+```
+
+Contributor coverage and unattributed billed DDUs:
+
+```promql
+dynatrace_license_contributor_davis_data_units_coverage_ratio
+dynatrace_license_contributor_davis_data_units{dimension_type="unattributed"}
+```
+
+Highest raw metric traffic sources, which are not billed contribution:
+
+```promql
+topk(20, dynatrace_license_reported_metric_davis_data_units)
+```
+
+DDU contributors grouped by a directly related Kubernetes cluster:
+
+```promql
+sum by (environment, pool, kubernetes_cluster, kubernetes_distribution) (
+  label_replace(
+    dynatrace_license_contributor_davis_data_units{dimension_type="entity"},
+    "entity_id", "$1", "dimension_id", "(.+)"
+  )
+  * on (environment_id, entity_id) group_left(
+      kubernetes_cluster,
+      kubernetes_distribution
+    )
+    dynatrace_entity_kubernetes_cluster_info
+)
 ```
 
 Average host-unit usage over seven days:
