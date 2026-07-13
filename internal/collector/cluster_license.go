@@ -118,7 +118,7 @@ func NewClusterLicenseExporter(cfg config.Config, client ClusterLicenseClient, l
 			refreshErrors:   prometheus.NewDesc(namespace+"_refresh_errors_total", "Total failed collector refresh attempts.", labels("collector"), nil),
 			refreshDuration: prometheus.NewDesc(namespace+"_refresh_duration_seconds", "Duration of the last collector refresh.", labels("collector"), nil),
 			lastAttempt:     prometheus.NewDesc(namespace+"_cache_last_attempt_timestamp_seconds", "Unix timestamp of the last cache refresh attempt.", labels("collector"), nil),
-			lastSuccess:     prometheus.NewDesc(namespace+"_cache_last_success_timestamp_seconds", "Unix timestamp of the last successful in-memory snapshot.", labels("collector"), nil),
+			lastSuccess:     prometheus.NewDesc(namespace+"_cache_last_success_timestamp_seconds", "Unix timestamp of the last successful cache refresh.", labels("collector"), nil),
 			cacheAge:        prometheus.NewDesc(namespace+"_cache_age_seconds", "Age of the last successful in-memory snapshot.", labels("collector"), nil),
 			cacheStale:      prometheus.NewDesc(namespace+"_cache_stale", "Whether the in-memory snapshot is missing or stale.", labels("collector"), nil),
 			quota:           prometheus.NewDesc(namespace+"_license_quota", "Contract quota reported by the Dynatrace cluster license API.", labels("product"), nil),
