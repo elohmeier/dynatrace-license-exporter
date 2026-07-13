@@ -171,7 +171,7 @@ func TestContributorSchedulerLifecycle(t *testing.T) {
 func TestContributorRegistryAndDebugEndpoint(t *testing.T) {
 	cfg := config.Default()
 	cfg.URL = "https://tenant.example.invalid"
-	billing := New(cfg, nil, nil)
+	billing := New(cfg, nil, nil, nil)
 	contributors := NewContributorExporter(cfg, nil, nil)
 	registry := prometheus.NewRegistry()
 	if err := registry.Register(Combine(billing, contributors)); err != nil {

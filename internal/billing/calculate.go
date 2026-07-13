@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -95,6 +96,14 @@ func CalculateSnapshot(doc Document, environmentNames map[string]string) (*Snaps
 			DavisDataUnitsByPool: make(map[string]float64),
 		}
 		for _, host := range entry.HostUsages {
+			hostID, err := CanonicalHostID(host.OSIId)
+			if err != nil {
+				return nil, fmt.Errorf("environment %q: %w", entry.EnvironmentUUID, err)
+			}
+			hostName := strings.TrimSpace(host.HostName)
+			if hostName == "" {
+				hostName = hostID
+			}
 			mode := "full_stack"
 			if host.InfrastructureOnly {
 				mode = "infrastructure"
@@ -107,8 +116,8 @@ func CalculateSnapshot(doc Document, environmentNames map[string]string) (*Snaps
 			env.HostUnitsByMode[mode] += units
 			env.HostCountByMode[mode]++
 			env.Hosts = append(env.Hosts, HostSnapshot{
-				ID:                  string(host.OSIId),
-				Name:                host.HostName,
+				ID:                  hostID,
+				Name:                hostName,
 				Category:            host.HostCategory,
 				MonitoringMode:      mode,
 				PaaS:                host.PaaS,

@@ -150,8 +150,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	var contributorExporter *collector.ContributorExporter
+	var hostTargets []collector.HostTarget
 	if len(environments) > 0 {
 		targets := make([]collector.ContributorTarget, 0, len(environments))
+		hostTargets = make([]collector.HostTarget, 0, len(environments))
 		for _, environment := range environments {
 			environmentToken, err := environment.Token()
 			if err != nil {
@@ -168,11 +170,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 				return 1
 			}
 			targets = append(targets, collector.ContributorTarget{Environment: environment, Client: environmentClient})
+			hostTargets = append(hostTargets, collector.HostTarget{Environment: environment, Client: environmentClient})
 		}
 		contributorExporter = collector.NewContributorExporter(cfg, targets, logger)
 	}
 
-	exporter := collector.New(cfg, client, logger)
+	exporter := collector.New(cfg, client, hostTargets, logger)
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	registry.MustRegister(apiMetrics.Collectors()...)
@@ -201,7 +204,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Info("starting HTTP server", "addr", server.Addr, "include_hosts", cfg.IncludeHosts, "contributor_environments", len(environments))
+		logger.Info("starting HTTP server", "addr", server.Addr, "include_hosts", cfg.IncludeHosts, "environment_api_clients", len(environments))
 		errCh <- server.ListenAndServe()
 	}()
 	sigCh := make(chan os.Signal, 1)

@@ -217,7 +217,7 @@ type environmentFile struct {
 	Environments []Environment `json:"environments"`
 }
 
-// LoadEnvironments loads generic contributor targets from the configured JSON file.
+// LoadEnvironments loads environment API clients from the configured JSON file.
 func (c Config) LoadEnvironments() ([]Environment, error) {
 	if c.EnvironmentsFile == "" {
 		return nil, nil

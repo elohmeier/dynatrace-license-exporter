@@ -80,3 +80,36 @@ func TestCalculateSnapshotValidationAndUnknownMonitor(t *testing.T) {
 		t.Fatal("missing environment UUID unexpectedly succeeded")
 	}
 }
+
+func TestCalculateSnapshotCanonicalHostIdentityAndNameFallback(t *testing.T) {
+	doc := Document{
+		TimeFrameStart: 1,
+		TimeFrameEnd:   2,
+		EnvironmentBillingEntries: []EnvironmentEntry{{
+			EnvironmentUUID: "environment-example",
+			HostUsages: []HostUsage{
+				{OSIId: "-1"},
+				{OSIId: "42", HostName: "archive-host.example.invalid"},
+			},
+		}},
+	}
+	snapshot, err := CalculateSnapshot(doc, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hosts := snapshot.Environments[0].Hosts
+	if len(hosts) != 2 {
+		t.Fatalf("hosts = %+v", hosts)
+	}
+	if hosts[0].ID != "HOST-000000000000002A" || hosts[0].Name != "archive-host.example.invalid" {
+		t.Fatalf("archive-named host = %+v", hosts[0])
+	}
+	if hosts[1].ID != "HOST-FFFFFFFFFFFFFFFF" || hosts[1].Name != hosts[1].ID {
+		t.Fatalf("fallback-named host = %+v", hosts[1])
+	}
+
+	doc.EnvironmentBillingEntries[0].HostUsages[0].OSIId = "invalid"
+	if _, err := CalculateSnapshot(doc, nil); err == nil {
+		t.Fatal("invalid host OSI ID unexpectedly succeeded")
+	}
+}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/elohmeier/dynatrace-license-exporter/internal/billing"
 	"github.com/elohmeier/dynatrace-license-exporter/internal/config"
+	"github.com/elohmeier/dynatrace-license-exporter/internal/dynatrace"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
@@ -41,6 +42,24 @@ func (f *fakeLicenseClient) LicenseConsumption(_ context.Context, start, end tim
 	return f.archive, f.err
 }
 
+type fakeHostEntityClient struct {
+	mu       sync.Mutex
+	entities []dynatrace.Entity
+	err      error
+	calls    int
+	envID    string
+	ids      []string
+}
+
+func (f *fakeHostEntityClient) Entities(_ context.Context, environmentID string, entityIDs []string) ([]dynatrace.Entity, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	f.envID = environmentID
+	f.ids = append([]string(nil), entityIDs...)
+	return append([]dynatrace.Entity(nil), f.entities...), f.err
+}
+
 func TestRefreshCollectAndRetainLastGoodSnapshot(t *testing.T) {
 	now := time.Date(2024, 1, 1, 3, 0, 0, 0, time.UTC)
 	doc := billing.Document{
@@ -49,8 +68,8 @@ func TestRefreshCollectAndRetainLastGoodSnapshot(t *testing.T) {
 		EnvironmentBillingEntries: []billing.EnvironmentEntry{{
 			EnvironmentUUID: "environment-example",
 			HostUsages: []billing.HostUsage{{
-				OSIId:           "HOST-EXAMPLE",
-				HostName:        "host.example.invalid",
+				OSIId:           "42",
+				HostName:        "archive-host-42.example.invalid",
 				HostMemoryBytes: 8 * 1024 * 1024 * 1024,
 			}},
 			SyntheticBillingUsage: []billing.SyntheticUsage{{
@@ -66,7 +85,11 @@ func TestRefreshCollectAndRetainLastGoodSnapshot(t *testing.T) {
 	cfg.URL = "https://tenant.example.invalid"
 	cfg.Labels = map[string]string{"site": "test"}
 	cfg.EnvironmentNames = map[string]string{"environment-example": "Example"}
-	exporter := New(cfg, client, nil)
+	hostClient := &fakeHostEntityClient{entities: []dynatrace.Entity{{
+		EntityID: "HOST-000000000000002A", DisplayName: "host-42.example.invalid", Type: "HOST",
+	}}}
+	hostTargets := []HostTarget{{Environment: config.Environment{ID: "environment-example", Name: "Example"}, Client: hostClient}}
+	exporter := New(cfg, client, hostTargets, nil)
 	exporter.now = func() time.Time { return now }
 
 	if err := exporter.RefreshOnce(context.Background()); err != nil {
@@ -76,6 +99,11 @@ func TestRefreshCollectAndRetainLastGoodSnapshot(t *testing.T) {
 	if !client.start.Equal(wantEnd.Add(-cfg.BillingLookback)) || !client.end.Equal(wantEnd) {
 		t.Fatalf("query interval = %s..%s", client.start, client.end)
 	}
+	hostClient.mu.Lock()
+	if hostClient.calls != 1 || hostClient.envID != "environment-example" || len(hostClient.ids) != 1 || hostClient.ids[0] != "HOST-000000000000002A" {
+		t.Fatalf("host lookup calls=%d environment=%q ids=%v", hostClient.calls, hostClient.envID, hostClient.ids)
+	}
+	hostClient.mu.Unlock()
 	status := exporter.Status(now)
 	if !status.Ready || status.EnvironmentCount != 1 || status.BillingPeriodEndUnix != doc.TimeFrameEnd/1000 {
 		t.Fatalf("unexpected status: %+v", status)
@@ -90,7 +118,7 @@ dynatrace_license_estimated_host_units{environment="Example",environment_id="env
 dynatrace_license_estimated_host_units{environment="Example",environment_id="environment-example",monitoring_mode="infrastructure",site="test"} 0
 # HELP dynatrace_license_host_estimated_host_units Estimated host units for one host in the billing interval.
 # TYPE dynatrace_license_host_estimated_host_units gauge
-dynatrace_license_host_estimated_host_units{environment="Example",environment_id="environment-example",has_containers="false",host="host.example.invalid",host_category="",host_id="HOST-EXAMPLE",monitoring_mode="full_stack",paas="false",premium_log_analytics="false",site="test"} 0.5
+dynatrace_license_host_estimated_host_units{environment="Example",environment_id="environment-example",has_containers="false",host="host-42.example.invalid",host_category="",host_id="HOST-000000000000002A",monitoring_mode="full_stack",paas="false",premium_log_analytics="false",site="test"} 0.5
 `
 	if err := testutil.CollectAndCompare(exporter, strings.NewReader(expected),
 		"dynatrace_license_davis_data_units",
@@ -117,6 +145,58 @@ dynatrace_license_host_estimated_host_units{environment="Example",environment_id
 	}
 }
 
+func TestHostEnrichmentFailureRetainsNameAndPublishesFreshBilling(t *testing.T) {
+	now := time.Date(2024, 1, 1, 3, 0, 0, 0, time.UTC)
+	doc := billing.Document{
+		TimeFrameStart: now.Add(-4 * time.Hour).UnixMilli(),
+		TimeFrameEnd:   now.Add(-3 * time.Hour).UnixMilli(),
+		EnvironmentBillingEntries: []billing.EnvironmentEntry{{
+			EnvironmentUUID: "environment-example",
+			HostUsages: []billing.HostUsage{{
+				OSIId: "7", HostMemoryBytes: 8 * 1024 * 1024 * 1024,
+			}},
+		}},
+	}
+	licenseClient := &fakeLicenseClient{archive: archiveForDocument(t, doc)}
+	hostClient := &fakeHostEntityClient{entities: []dynatrace.Entity{{
+		EntityID: "HOST-0000000000000007", DisplayName: "host-seven.example.invalid", Type: "HOST",
+	}}}
+	cfg := config.Default()
+	cfg.URL = "https://tenant.example.invalid"
+	cfg.EnvironmentNames = map[string]string{"environment-example": "Example"}
+	exporter := New(cfg, licenseClient, []HostTarget{{
+		Environment: config.Environment{ID: "environment-example", Name: "Example"}, Client: hostClient,
+	}}, nil)
+	exporter.now = func() time.Time { return now }
+	if err := exporter.RefreshOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	doc.EnvironmentBillingEntries[0].HostUsages[0].HostMemoryBytes = 16 * 1024 * 1024 * 1024
+	licenseClient.mu.Lock()
+	licenseClient.archive = archiveForDocument(t, doc)
+	licenseClient.mu.Unlock()
+	hostClient.mu.Lock()
+	hostClient.err = errors.New("synthetic entity API failure")
+	hostClient.entities = nil
+	hostClient.mu.Unlock()
+	if err := exporter.RefreshOnce(context.Background()); err != nil {
+		t.Fatalf("optional host enrichment failed billing refresh: %v", err)
+	}
+	if status := exporter.Status(now); status.Errors != 0 || !status.Ready {
+		t.Fatalf("status = %+v", status)
+	}
+
+	expected := `
+# HELP dynatrace_license_host_estimated_host_units Estimated host units for one host in the billing interval.
+# TYPE dynatrace_license_host_estimated_host_units gauge
+dynatrace_license_host_estimated_host_units{environment="Example",environment_id="environment-example",has_containers="false",host="host-seven.example.invalid",host_category="",host_id="HOST-0000000000000007",monitoring_mode="full_stack",paas="false",premium_log_analytics="false"} 1
+`
+	if err := testutil.CollectAndCompare(exporter, strings.NewReader(expected), "dynatrace_license_host_estimated_host_units"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestReadinessAndDisabledHostMetrics(t *testing.T) {
 	now := time.Date(2024, 1, 1, 3, 0, 0, 0, time.UTC)
 	doc := billing.Document{
@@ -124,13 +204,16 @@ func TestReadinessAndDisabledHostMetrics(t *testing.T) {
 		TimeFrameEnd:   now.Add(-3 * time.Hour).UnixMilli(),
 		EnvironmentBillingEntries: []billing.EnvironmentEntry{{
 			EnvironmentUUID: "environment-example",
-			HostUsages:      []billing.HostUsage{{OSIId: "HOST-EXAMPLE", HostMemoryBytes: 1024}},
+			HostUsages:      []billing.HostUsage{{OSIId: "1", HostMemoryBytes: 1024}},
 		}},
 	}
 	cfg := config.Default()
 	cfg.URL = "https://tenant.example.invalid"
 	cfg.IncludeHosts = false
-	exporter := New(cfg, &fakeLicenseClient{archive: archiveForDocument(t, doc)}, nil)
+	hostClient := &fakeHostEntityClient{}
+	exporter := New(cfg, &fakeLicenseClient{archive: archiveForDocument(t, doc)}, []HostTarget{{
+		Environment: config.Environment{ID: "environment-example", Name: "Example"}, Client: hostClient,
+	}}, nil)
 	exporter.now = func() time.Time { return now }
 
 	request := httptest.NewRequest(http.MethodGet, "/readyz", nil)
@@ -150,6 +233,11 @@ func TestReadinessAndDisabledHostMetrics(t *testing.T) {
 	if n := testutil.CollectAndCount(exporter, "dynatrace_license_host_estimated_host_units"); n != 0 {
 		t.Fatalf("per-host metric count = %d, want 0", n)
 	}
+	hostClient.mu.Lock()
+	if hostClient.calls != 0 {
+		t.Fatalf("host entity calls = %d, want 0", hostClient.calls)
+	}
+	hostClient.mu.Unlock()
 }
 
 func TestSchedulerAndDebugHandler(t *testing.T) {
@@ -165,7 +253,7 @@ func TestSchedulerAndDebugHandler(t *testing.T) {
 	cfg := config.Default()
 	cfg.URL = "https://tenant.example.invalid"
 	cfg.RefreshInterval = 10 * time.Millisecond
-	exporter := New(cfg, client, nil)
+	exporter := New(cfg, client, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	exporter.Start(ctx)

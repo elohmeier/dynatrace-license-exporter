@@ -29,6 +29,7 @@ type LicenseClient interface {
 type Exporter struct {
 	cfg    config.Config
 	client LicenseClient
+	hosts  *hostNameEnricher
 	logger *slog.Logger
 	now    func() time.Time
 
@@ -99,7 +100,7 @@ type descriptors struct {
 }
 
 // New constructs an exporter without starting its scheduler.
-func New(cfg config.Config, client LicenseClient, logger *slog.Logger) *Exporter {
+func New(cfg config.Config, client LicenseClient, hostTargets []HostTarget, logger *slog.Logger) *Exporter {
 	labelKeys := cfg.LabelKeys()
 	labelValues := make([]string, len(labelKeys))
 	for i, key := range labelKeys {
@@ -136,6 +137,7 @@ func New(cfg config.Config, client LicenseClient, logger *slog.Logger) *Exporter
 	return &Exporter{
 		cfg:         cfg,
 		client:      client,
+		hosts:       newHostNameEnricher(hostTargets, logger),
 		logger:      logger,
 		now:         time.Now,
 		desc:        d,
@@ -212,6 +214,9 @@ func (e *Exporter) RefreshOnce(ctx context.Context) error {
 		var snapshot *billing.Snapshot
 		snapshot, err = billing.LatestSettledSnapshot(archive, queryEnd, e.cfg.EnvironmentNames, limits)
 		if err == nil {
+			if e.cfg.IncludeHosts {
+				e.hosts.enrich(ctx, snapshot)
+			}
 			e.mu.Lock()
 			e.snapshot = snapshot
 			e.mu.Unlock()

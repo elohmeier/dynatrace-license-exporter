@@ -7,9 +7,16 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+)
+
+const (
+	maxEntityPages          = 100
+	maxEntitySelectorLength = 2000
+	entityPageSize          = 100
 )
 
 // MetricDatum is one dimension tuple returned by a Metrics API query.
@@ -34,7 +41,7 @@ type metricData struct {
 	Values       []*float64        `json:"values"`
 }
 
-// Entity contains the metadata used to enrich contributor series.
+// Entity contains metadata used to enrich environment-backed series.
 type Entity struct {
 	EntityID        string         `json:"entityId"`
 	Type            string         `json:"type"`
@@ -58,7 +65,8 @@ type EntityZone struct {
 }
 
 type entitiesResponse struct {
-	Entities []Entity `json:"entities"`
+	NextPageKey string   `json:"nextPageKey"`
+	Entities    []Entity `json:"entities"`
 }
 
 // QueryMetric queries one environment billing metric over a fixed window.
@@ -113,6 +121,75 @@ func (c *Client) Entity(ctx context.Context, environmentID, entityID string) (*E
 		return nil, nil
 	}
 	return &response.Entities[0], nil
+}
+
+// Entities fetches the basic metadata for a bounded set of environment entity IDs.
+// Dynatrace limits entity selector strings to 2,000 characters, so IDs are
+// de-duplicated, sorted, and split across as many paginated requests as needed.
+func (c *Client) Entities(ctx context.Context, environmentID string, entityIDs []string) ([]Entity, error) {
+	batches, err := entityIDBatches(entityIDs)
+	if err != nil {
+		return nil, err
+	}
+	path := "/e/" + url.PathEscape(environmentID) + "/api/v2/entities"
+	var entities []Entity
+	for _, batch := range batches {
+		query := url.Values{
+			"entitySelector": []string{entityIDSelector(batch)},
+			"pageSize":       []string{strconv.Itoa(entityPageSize)},
+		}
+		for pageNumber := 0; pageNumber < maxEntityPages; pageNumber++ {
+			var response entitiesResponse
+			if err := c.getJSON(ctx, "entities", path, query, &response); err != nil {
+				return nil, err
+			}
+			entities = append(entities, response.Entities...)
+			if response.NextPageKey == "" {
+				break
+			}
+			if pageNumber == maxEntityPages-1 {
+				return nil, fmt.Errorf("entities query exceeded %d pages", maxEntityPages)
+			}
+			query = url.Values{"nextPageKey": []string{response.NextPageKey}}
+		}
+	}
+	return entities, nil
+}
+
+func entityIDBatches(entityIDs []string) ([][]string, error) {
+	unique := make(map[string]bool, len(entityIDs))
+	ids := make([]string, 0, len(entityIDs))
+	for _, id := range entityIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return nil, fmt.Errorf("entity ID must not be empty")
+		}
+		if !unique[id] {
+			unique[id] = true
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	var batches [][]string
+	for _, id := range ids {
+		if len(entityIDSelector([]string{id})) > maxEntitySelectorLength {
+			return nil, fmt.Errorf("entity ID %q exceeds selector length limit", id)
+		}
+		if len(batches) == 0 || len(entityIDSelector(append(append([]string{}, batches[len(batches)-1]...), id))) > maxEntitySelectorLength {
+			batches = append(batches, []string{id})
+			continue
+		}
+		batches[len(batches)-1] = append(batches[len(batches)-1], id)
+	}
+	return batches, nil
+}
+
+func entityIDSelector(entityIDs []string) string {
+	quoted := make([]string, len(entityIDs))
+	for i, id := range entityIDs {
+		quoted[i] = strconv.Quote(id)
+	}
+	return "entityId(" + strings.Join(quoted, ",") + ")"
 }
 
 func (c *Client) getJSON(ctx context.Context, endpoint, path string, query url.Values, target any) error {

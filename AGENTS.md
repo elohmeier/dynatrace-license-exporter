@@ -20,6 +20,15 @@ make ci
 Use `gofmt` for Go sources and table-driven tests for boundary behavior. API
 tests should use `httptest`; never require a real Dynatrace endpoint.
 
+## Commits and releases
+
+Releases are driven from `main` by Conventional Commits and semantic-release.
+Use subjects such as `fix: retain cached entity names`, `feat: enrich host
+metrics`, or `chore: update release tooling`. A `fix` creates a patch release,
+a `feat` creates a minor release, and a breaking-change marker (`feat!:` or a
+`BREAKING CHANGE:` footer) creates a major release. Commit subjects without a
+release-bearing type do not create a new version.
+
 ## Security and privacy
 
 Never commit API tokens, internal URLs, real environment IDs, hostnames,

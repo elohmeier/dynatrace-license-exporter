@@ -64,7 +64,7 @@ func TestRunRejectsInvalidEnvironmentFile(t *testing.T) {
 func TestMuxHealthAndIndex(t *testing.T) {
 	cfg := config.Default()
 	cfg.URL = "https://tenant.example.invalid"
-	exporter := collector.New(cfg, nil, nil)
+	exporter := collector.New(cfg, nil, nil, nil)
 	mux := newMux(prometheus.NewRegistry(), exporter, nil)
 	for _, path := range []string{"/health", "/healthz"} {
 		recorder := httptest.NewRecorder()

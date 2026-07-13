@@ -74,6 +74,74 @@ func TestEntity(t *testing.T) {
 	}
 }
 
+func TestEntitiesPagination(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/e/environment-example/api/v2/entities" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		if requests == 1 {
+			if got := r.URL.Query().Get("entitySelector"); got != `entityId("HOST-000000000000002A","HOST-000000000000002B")` {
+				t.Errorf("selector = %q", got)
+			}
+			if got := r.URL.Query().Get("pageSize"); got != "100" {
+				t.Errorf("page size = %q", got)
+			}
+			if got := r.URL.Query().Get("fields"); got != "" {
+				t.Errorf("fields = %q, want display-name-only response", got)
+			}
+			_, _ = fmt.Fprint(w, `{"nextPageKey":"page-two","entities":[{"entityId":"HOST-000000000000002A","type":"HOST","displayName":"host-42.example.invalid"}]}`)
+			return
+		}
+		if r.URL.Query().Get("nextPageKey") != "page-two" || len(r.URL.Query()) != 1 {
+			t.Errorf("next query = %v", r.URL.Query())
+		}
+		_, _ = fmt.Fprint(w, `{"entities":[{"entityId":"HOST-000000000000002B","type":"HOST","displayName":"host-43.example.invalid"}]}`)
+	}))
+	defer server.Close()
+	client, err := NewClient(Config{BaseURL: server.URL, Token: "synthetic-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entities, err := client.Entities(context.Background(), "environment-example", []string{
+		"HOST-000000000000002B", "HOST-000000000000002A", "HOST-000000000000002A",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 || len(entities) != 2 || entities[0].DisplayName != "host-42.example.invalid" || entities[1].DisplayName != "host-43.example.invalid" {
+		t.Fatalf("requests=%d entities=%+v", requests, entities)
+	}
+}
+
+func TestEntityIDBatches(t *testing.T) {
+	ids := make([]string, 100)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("HOST-%016X", i)
+	}
+	batches, err := entityIDBatches(ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, batch := range batches {
+		count += len(batch)
+		if got := len(entityIDSelector(batch)); got > maxEntitySelectorLength {
+			t.Fatalf("selector length = %d, want <= %d", got, maxEntitySelectorLength)
+		}
+	}
+	if len(batches) < 2 || count != len(ids) {
+		t.Fatalf("batches=%d IDs=%d, want multiple batches with %d IDs", len(batches), count, len(ids))
+	}
+	if _, err := entityIDBatches([]string{""}); err == nil {
+		t.Fatal("empty entity ID unexpectedly succeeded")
+	}
+	if _, err := entityIDBatches([]string{strings.Repeat("x", maxEntitySelectorLength)}); err == nil {
+		t.Fatal("oversized entity ID unexpectedly succeeded")
+	}
+}
+
 func TestContributorAPIError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "invalid query", http.StatusBadRequest)
