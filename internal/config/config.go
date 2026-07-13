@@ -339,7 +339,8 @@ func (c Config) LabelKeys() []string {
 func ReservedLabelNames() []string {
 	return []string{
 		"attribute", "collector", "dimension_id", "dimension_name", "dimension_type", "entity_id", "entity_name", "entity_type",
-		"environment", "environment_id", "has_containers", "host", "host_category", "host_id", "key", "kind", "location",
+		"environment", "environment_id", "has_containers", "host", "host_category", "host_id", "host_kubernetes_cluster",
+		"host_kubernetes_cluster_entity_id", "host_kubernetes_distribution", "key", "kind", "location",
 		"management_zone", "monitor_type", "monitoring_mode", "paas", "pool", "premium_log_analytics", "source", "test_id", "value",
 	}
 }

@@ -97,6 +97,7 @@ type descriptors struct {
 	syntheticDEMUnits   *prometheus.Desc
 	hostEstimatedUnits  *prometheus.Desc
 	hostMemoryBytes     *prometheus.Desc
+	hostKubernetesInfo  *prometheus.Desc
 }
 
 // New constructs an exporter without starting its scheduler.
@@ -133,6 +134,7 @@ func New(cfg config.Config, client LicenseClient, hostTargets []HostTarget, logg
 		syntheticDEMUnits:   prometheus.NewDesc(namespace+"_license_synthetic_estimated_dem_units", "Estimated DEM units for a synthetic monitor in the billing interval.", labels("environment_id", "environment", "test_id", "monitor_type"), nil),
 		hostEstimatedUnits:  prometheus.NewDesc(namespace+"_license_host_estimated_host_units", "Estimated host units for one host in the billing interval.", labels("environment_id", "environment", "host_id", "host", "monitoring_mode", "host_category", "paas", "has_containers", "premium_log_analytics"), nil),
 		hostMemoryBytes:     prometheus.NewDesc(namespace+"_license_host_memory_bytes", "Memory used to estimate host units for one host.", labels("environment_id", "environment", "host_id", "host", "monitoring_mode", "host_category", "paas", "has_containers", "premium_log_analytics"), nil),
+		hostKubernetesInfo:  prometheus.NewDesc(namespace+"_license_host_kubernetes_info", "Dynatrace Kubernetes cluster associated with one billed host.", labels("environment_id", "environment", "host_id", "host", "host_kubernetes_cluster_entity_id", "host_kubernetes_cluster", "host_kubernetes_distribution"), nil),
 	}
 	return &Exporter{
 		cfg:         cfg,
@@ -312,6 +314,9 @@ func (e *Exporter) collectSnapshot(ch chan<- prometheus.Metric, now time.Time, s
 				labels := []string{env.ID, env.Name, host.ID, host.Name, host.MonitoringMode, host.Category, strconv.FormatBool(host.PaaS), strconv.FormatBool(host.HasContainers), strconv.FormatBool(host.PremiumLogAnalytics)}
 				e.emit(ch, e.desc.hostEstimatedUnits, prometheus.GaugeValue, host.EstimatedHostUnits, labels...)
 				e.emit(ch, e.desc.hostMemoryBytes, prometheus.GaugeValue, float64(host.MemoryBytes), labels...)
+				if cluster := host.KubernetesCluster; cluster.EntityID != "" {
+					e.emit(ch, e.desc.hostKubernetesInfo, prometheus.GaugeValue, 1, env.ID, env.Name, host.ID, host.Name, cluster.EntityID, cluster.Name, cluster.Distribution)
+				}
 			}
 		}
 	}
@@ -376,7 +381,7 @@ func (e *Exporter) allDescriptors() []*prometheus.Desc {
 		e.desc.periodEnd, e.desc.periodDuration, e.desc.billingDataAge, e.desc.environmentInfo,
 		e.desc.estimatedHostUnits, e.desc.hostCount, e.desc.estimatedDEMUnits, e.desc.davisDataUnits,
 		e.desc.rumUsage, e.desc.syntheticExecutions, e.desc.syntheticDEMUnits, e.desc.hostEstimatedUnits,
-		e.desc.hostMemoryBytes,
+		e.desc.hostMemoryBytes, e.desc.hostKubernetesInfo,
 	}
 }
 

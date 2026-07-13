@@ -43,12 +43,19 @@ type metricData struct {
 
 // Entity contains metadata used to enrich environment-backed series.
 type Entity struct {
-	EntityID        string         `json:"entityId"`
-	Type            string         `json:"type"`
-	DisplayName     string         `json:"displayName"`
-	Tags            []EntityTag    `json:"tags"`
-	ManagementZones []EntityZone   `json:"managementZones"`
-	Properties      map[string]any `json:"properties"`
+	EntityID        string                       `json:"entityId"`
+	Type            string                       `json:"type"`
+	DisplayName     string                       `json:"displayName"`
+	Tags            []EntityTag                  `json:"tags"`
+	ManagementZones []EntityZone                 `json:"managementZones"`
+	Properties      map[string]any               `json:"properties"`
+	ToRelationships map[string][]EntityReference `json:"toRelationships"`
+}
+
+// EntityReference identifies one entity in a Dynatrace relationship.
+type EntityReference struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
 }
 
 // EntityTag is a Dynatrace entity tag.
@@ -123,10 +130,19 @@ func (c *Client) Entity(ctx context.Context, environmentID, entityID string) (*E
 	return &response.Entities[0], nil
 }
 
-// Entities fetches the basic metadata for a bounded set of environment entity IDs.
+// Entities fetches display names and Kubernetes-cluster relationships for hosts.
 // Dynatrace limits entity selector strings to 2,000 characters, so IDs are
 // de-duplicated, sorted, and split across as many paginated requests as needed.
 func (c *Client) Entities(ctx context.Context, environmentID string, entityIDs []string) ([]Entity, error) {
+	return c.entities(ctx, environmentID, entityIDs, "toRelationships.isClusterOfHost")
+}
+
+// KubernetesClusters fetches display names and distributions for cluster entities.
+func (c *Client) KubernetesClusters(ctx context.Context, environmentID string, entityIDs []string) ([]Entity, error) {
+	return c.entities(ctx, environmentID, entityIDs, "properties.kubernetesDistribution")
+}
+
+func (c *Client) entities(ctx context.Context, environmentID string, entityIDs []string, fields string) ([]Entity, error) {
 	batches, err := entityIDBatches(entityIDs)
 	if err != nil {
 		return nil, err
@@ -136,6 +152,7 @@ func (c *Client) Entities(ctx context.Context, environmentID string, entityIDs [
 	for _, batch := range batches {
 		query := url.Values{
 			"entitySelector": []string{entityIDSelector(batch)},
+			"fields":         []string{fields},
 			"pageSize":       []string{strconv.Itoa(entityPageSize)},
 		}
 		for pageNumber := 0; pageNumber < maxEntityPages; pageNumber++ {

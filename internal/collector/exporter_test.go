@@ -43,12 +43,16 @@ func (f *fakeLicenseClient) LicenseConsumption(_ context.Context, start, end tim
 }
 
 type fakeHostEntityClient struct {
-	mu       sync.Mutex
-	entities []dynatrace.Entity
-	err      error
-	calls    int
-	envID    string
-	ids      []string
+	mu           sync.Mutex
+	entities     []dynatrace.Entity
+	clusters     []dynatrace.Entity
+	err          error
+	clusterErr   error
+	calls        int
+	clusterCalls int
+	envID        string
+	ids          []string
+	clusterIDs   []string
 }
 
 func (f *fakeHostEntityClient) Entities(_ context.Context, environmentID string, entityIDs []string) ([]dynatrace.Entity, error) {
@@ -58,6 +62,15 @@ func (f *fakeHostEntityClient) Entities(_ context.Context, environmentID string,
 	f.envID = environmentID
 	f.ids = append([]string(nil), entityIDs...)
 	return append([]dynatrace.Entity(nil), f.entities...), f.err
+}
+
+func (f *fakeHostEntityClient) KubernetesClusters(_ context.Context, environmentID string, entityIDs []string) ([]dynatrace.Entity, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.clusterCalls++
+	f.envID = environmentID
+	f.clusterIDs = append([]string(nil), entityIDs...)
+	return append([]dynatrace.Entity(nil), f.clusters...), f.clusterErr
 }
 
 func TestRefreshCollectAndRetainLastGoodSnapshot(t *testing.T) {
@@ -71,6 +84,7 @@ func TestRefreshCollectAndRetainLastGoodSnapshot(t *testing.T) {
 				OSIId:           "42",
 				HostName:        "archive-host-42.example.invalid",
 				HostMemoryBytes: 8 * 1024 * 1024 * 1024,
+				HasContainers:   true,
 			}},
 			SyntheticBillingUsage: []billing.SyntheticUsage{{
 				MonitorTypeID:    1,
@@ -85,9 +99,18 @@ func TestRefreshCollectAndRetainLastGoodSnapshot(t *testing.T) {
 	cfg.URL = "https://tenant.example.invalid"
 	cfg.Labels = map[string]string{"site": "test"}
 	cfg.EnvironmentNames = map[string]string{"environment-example": "Example"}
-	hostClient := &fakeHostEntityClient{entities: []dynatrace.Entity{{
-		EntityID: "HOST-000000000000002A", DisplayName: "host-42.example.invalid", Type: "HOST",
-	}}}
+	hostClient := &fakeHostEntityClient{
+		entities: []dynatrace.Entity{{
+			EntityID: "HOST-000000000000002A", DisplayName: "host-42.example.invalid", Type: "HOST",
+			ToRelationships: map[string][]dynatrace.EntityReference{
+				"isClusterOfHost": {{ID: "KUBERNETES_CLUSTER-0000000000000001", Type: "KUBERNETES_CLUSTER"}},
+			},
+		}},
+		clusters: []dynatrace.Entity{{
+			EntityID: "KUBERNETES_CLUSTER-0000000000000001", DisplayName: "Example Kubernetes Cluster", Type: "KUBERNETES_CLUSTER",
+			Properties: map[string]any{"kubernetesDistribution": "KUBERNETES"},
+		}},
+	}
 	hostTargets := []HostTarget{{Environment: config.Environment{ID: "environment-example", Name: "Example"}, Client: hostClient}}
 	exporter := New(cfg, client, hostTargets, nil)
 	exporter.now = func() time.Time { return now }
@@ -100,8 +123,8 @@ func TestRefreshCollectAndRetainLastGoodSnapshot(t *testing.T) {
 		t.Fatalf("query interval = %s..%s", client.start, client.end)
 	}
 	hostClient.mu.Lock()
-	if hostClient.calls != 1 || hostClient.envID != "environment-example" || len(hostClient.ids) != 1 || hostClient.ids[0] != "HOST-000000000000002A" {
-		t.Fatalf("host lookup calls=%d environment=%q ids=%v", hostClient.calls, hostClient.envID, hostClient.ids)
+	if hostClient.calls != 1 || hostClient.clusterCalls != 1 || hostClient.envID != "environment-example" || len(hostClient.ids) != 1 || hostClient.ids[0] != "HOST-000000000000002A" || len(hostClient.clusterIDs) != 1 || hostClient.clusterIDs[0] != "KUBERNETES_CLUSTER-0000000000000001" {
+		t.Fatalf("host lookup calls=%d cluster_calls=%d environment=%q ids=%v cluster_ids=%v", hostClient.calls, hostClient.clusterCalls, hostClient.envID, hostClient.ids, hostClient.clusterIDs)
 	}
 	hostClient.mu.Unlock()
 	status := exporter.Status(now)
@@ -118,12 +141,16 @@ dynatrace_license_estimated_host_units{environment="Example",environment_id="env
 dynatrace_license_estimated_host_units{environment="Example",environment_id="environment-example",monitoring_mode="infrastructure",site="test"} 0
 # HELP dynatrace_license_host_estimated_host_units Estimated host units for one host in the billing interval.
 # TYPE dynatrace_license_host_estimated_host_units gauge
-dynatrace_license_host_estimated_host_units{environment="Example",environment_id="environment-example",has_containers="false",host="host-42.example.invalid",host_category="",host_id="HOST-000000000000002A",monitoring_mode="full_stack",paas="false",premium_log_analytics="false",site="test"} 0.5
+dynatrace_license_host_estimated_host_units{environment="Example",environment_id="environment-example",has_containers="true",host="host-42.example.invalid",host_category="",host_id="HOST-000000000000002A",monitoring_mode="full_stack",paas="false",premium_log_analytics="false",site="test"} 0.5
+# HELP dynatrace_license_host_kubernetes_info Dynatrace Kubernetes cluster associated with one billed host.
+# TYPE dynatrace_license_host_kubernetes_info gauge
+dynatrace_license_host_kubernetes_info{environment="Example",environment_id="environment-example",host="host-42.example.invalid",host_id="HOST-000000000000002A",host_kubernetes_cluster="Example Kubernetes Cluster",host_kubernetes_cluster_entity_id="KUBERNETES_CLUSTER-0000000000000001",host_kubernetes_distribution="KUBERNETES",site="test"} 1
 `
 	if err := testutil.CollectAndCompare(exporter, strings.NewReader(expected),
 		"dynatrace_license_davis_data_units",
 		"dynatrace_license_estimated_host_units",
 		"dynatrace_license_host_estimated_host_units",
+		"dynatrace_license_host_kubernetes_info",
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -140,6 +167,7 @@ dynatrace_license_host_estimated_host_units{environment="Example",environment_id
 		"dynatrace_license_davis_data_units",
 		"dynatrace_license_estimated_host_units",
 		"dynatrace_license_host_estimated_host_units",
+		"dynatrace_license_host_kubernetes_info",
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -153,14 +181,23 @@ func TestHostEnrichmentFailureRetainsNameAndPublishesFreshBilling(t *testing.T) 
 		EnvironmentBillingEntries: []billing.EnvironmentEntry{{
 			EnvironmentUUID: "environment-example",
 			HostUsages: []billing.HostUsage{{
-				OSIId: "7", HostMemoryBytes: 8 * 1024 * 1024 * 1024,
+				OSIId: "7", HostMemoryBytes: 8 * 1024 * 1024 * 1024, HasContainers: true,
 			}},
 		}},
 	}
 	licenseClient := &fakeLicenseClient{archive: archiveForDocument(t, doc)}
-	hostClient := &fakeHostEntityClient{entities: []dynatrace.Entity{{
-		EntityID: "HOST-0000000000000007", DisplayName: "host-seven.example.invalid", Type: "HOST",
-	}}}
+	hostClient := &fakeHostEntityClient{
+		entities: []dynatrace.Entity{{
+			EntityID: "HOST-0000000000000007", DisplayName: "host-seven.example.invalid", Type: "HOST",
+			ToRelationships: map[string][]dynatrace.EntityReference{
+				"isClusterOfHost": {{ID: "KUBERNETES_CLUSTER-0000000000000007", Type: "KUBERNETES_CLUSTER"}},
+			},
+		}},
+		clusters: []dynatrace.Entity{{
+			EntityID: "KUBERNETES_CLUSTER-0000000000000007", DisplayName: "Retained Example Cluster", Type: "KUBERNETES_CLUSTER",
+			Properties: map[string]any{"kubernetesDistribution": "OPENSHIFT"},
+		}},
+	}
 	cfg := config.Default()
 	cfg.URL = "https://tenant.example.invalid"
 	cfg.EnvironmentNames = map[string]string{"environment-example": "Example"}
@@ -178,7 +215,9 @@ func TestHostEnrichmentFailureRetainsNameAndPublishesFreshBilling(t *testing.T) 
 	licenseClient.mu.Unlock()
 	hostClient.mu.Lock()
 	hostClient.err = errors.New("synthetic entity API failure")
+	hostClient.clusterErr = errors.New("synthetic cluster entity API failure")
 	hostClient.entities = nil
+	hostClient.clusters = nil
 	hostClient.mu.Unlock()
 	if err := exporter.RefreshOnce(context.Background()); err != nil {
 		t.Fatalf("optional host enrichment failed billing refresh: %v", err)
@@ -190,9 +229,12 @@ func TestHostEnrichmentFailureRetainsNameAndPublishesFreshBilling(t *testing.T) 
 	expected := `
 # HELP dynatrace_license_host_estimated_host_units Estimated host units for one host in the billing interval.
 # TYPE dynatrace_license_host_estimated_host_units gauge
-dynatrace_license_host_estimated_host_units{environment="Example",environment_id="environment-example",has_containers="false",host="host-seven.example.invalid",host_category="",host_id="HOST-0000000000000007",monitoring_mode="full_stack",paas="false",premium_log_analytics="false"} 1
+dynatrace_license_host_estimated_host_units{environment="Example",environment_id="environment-example",has_containers="true",host="host-seven.example.invalid",host_category="",host_id="HOST-0000000000000007",monitoring_mode="full_stack",paas="false",premium_log_analytics="false"} 1
+# HELP dynatrace_license_host_kubernetes_info Dynatrace Kubernetes cluster associated with one billed host.
+# TYPE dynatrace_license_host_kubernetes_info gauge
+dynatrace_license_host_kubernetes_info{environment="Example",environment_id="environment-example",host="host-seven.example.invalid",host_id="HOST-0000000000000007",host_kubernetes_cluster="Retained Example Cluster",host_kubernetes_cluster_entity_id="KUBERNETES_CLUSTER-0000000000000007",host_kubernetes_distribution="OPENSHIFT"} 1
 `
-	if err := testutil.CollectAndCompare(exporter, strings.NewReader(expected), "dynatrace_license_host_estimated_host_units"); err != nil {
+	if err := testutil.CollectAndCompare(exporter, strings.NewReader(expected), "dynatrace_license_host_estimated_host_units", "dynatrace_license_host_kubernetes_info"); err != nil {
 		t.Fatal(err)
 	}
 }

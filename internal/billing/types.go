@@ -110,6 +110,14 @@ type HostSnapshot struct {
 	PremiumLogAnalytics bool
 	MemoryBytes         int64
 	EstimatedHostUnits  float64
+	KubernetesCluster   KubernetesClusterInfo
+}
+
+// KubernetesClusterInfo identifies the Dynatrace Kubernetes cluster related to a host.
+type KubernetesClusterInfo struct {
+	EntityID     string
+	Name         string
+	Distribution string
 }
 
 // SyntheticSnapshot contains execution and estimated DEM data for one monitor.

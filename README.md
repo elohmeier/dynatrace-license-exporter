@@ -21,8 +21,9 @@ rows with names, management zones, selected platform attributes, and
 operator-allow-listed tags.
 
 When environment API clients are configured, current per-host billing metrics
-are also enriched with Dynatrace host display names. Billing archive OSI IDs are
-normalized to canonical `HOST-<16 hexadecimal digits>` entity IDs.
+are also enriched with Dynatrace host display names and Kubernetes cluster
+relationships. Billing archive OSI IDs are normalized to canonical
+`HOST-<16 hexadecimal digits>` entity IDs.
 
 ## Requirements
 
@@ -31,9 +32,9 @@ normalized to canonical `HOST-<16 hexadecimal digits>` entity IDs.
   `/api/cluster/v2/license/consumption` and
   `/api/cluster/v2/clusterLicense`.
 - Dynatrace Managed 1.326 or newer for cluster quota and billed-usage metrics.
-- Optional environment API tokens with `entities.read` for host-name
-  enrichment, and permission to read metrics when contributor collection is
-  enabled.
+- Optional environment API tokens with `entities.read` for host-name and
+  Kubernetes-cluster enrichment, and permission to read metrics when
+  contributor collection is enabled.
 - Network and TLS trust from the exporter to the Dynatrace Managed endpoint.
 
 The exporter is read-only and only performs `GET` requests.
@@ -124,7 +125,7 @@ as CLI flags because command lines may be visible to other users.
 | `-url` | `DYNATRACE_URL` | required | Dynatrace Managed base URL, without an environment path. |
 | `-connect-address` | `DYNATRACE_CONNECT_ADDRESS` | none | Optional `host:port` connection override; URL Host and TLS SNI are preserved. |
 | `-cluster-token-file` | `DYNATRACE_CLUSTER_TOKEN_FILE` | none | File containing the cluster API token. |
-| `-environments-file` | `DYNATRACE_ENVIRONMENTS_FILE` | none | JSON file enabling environment API clients for host names and contributor collection. |
+| `-environments-file` | `DYNATRACE_ENVIRONMENTS_FILE` | none | JSON file enabling environment API clients for host and Kubernetes metadata plus contributor collection. |
 | none | `DYNATRACE_CLUSTER_TOKEN` | none | Cluster API token; takes precedence over the token file. |
 | none | `DYNATRACE_TOKEN` | none | Fallback API token environment variable. |
 | `-ca-file` | `DYNATRACE_CA_FILE` | system trust | Additional CA certificate bundle. |
@@ -161,9 +162,9 @@ Unknown environment IDs are used as their own display names.
 
 ### Environment API clients
 
-Host-name enrichment and contributor collection are disabled unless an
-environments file is configured. The file contains no inline secrets—only
-token-file paths or environment variable names:
+Host and Kubernetes-cluster enrichment plus contributor collection are
+disabled unless an environments file is configured. The file contains no
+inline secrets—only token-file paths or environment variable names:
 
 ```json
 {
@@ -192,6 +193,11 @@ For each current billing host, the exporter converts the archive's signed
 display names take precedence over archive host names and remain cached across
 transient API failures. When no resolved name is available, the exporter uses
 the archive name and then the canonical host ID as fallbacks.
+
+When a host has an `isClusterOfHost` relationship, the exporter resolves the
+referenced `KUBERNETES_CLUSTER` entity and exports its display name and
+distribution as a separate info metric. Relationship and cluster metadata are
+cached across transient Entity API failures.
 
 Entity tags are not exported by default. Explicitly allow only stable,
 low-cardinality keys needed for ownership or grouping:
@@ -235,6 +241,7 @@ Optional per-host metrics:
 
 - `dynatrace_license_host_estimated_host_units{environment_id,environment,host_id,host,monitoring_mode,host_category,paas,has_containers,premium_log_analytics}`
 - `dynatrace_license_host_memory_bytes{environment_id,environment,host_id,host,monitoring_mode,host_category,paas,has_containers,premium_log_analytics}`
+- `dynatrace_license_host_kubernetes_info{environment_id,environment,host_id,host,host_kubernetes_cluster_entity_id,host_kubernetes_cluster,host_kubernetes_distribution}`
 
 The `host_id` label is always the canonical Dynatrace `HOST-...` entity ID.
 The `host` label is always non-empty and contains the best available display
@@ -304,6 +311,19 @@ Highest current host consumers:
 
 ```promql
 topk(20, dynatrace_license_host_estimated_host_units)
+```
+
+Estimated host units grouped by the related Dynatrace Kubernetes cluster:
+
+```promql
+sum by (host_kubernetes_cluster, host_kubernetes_distribution) (
+  dynatrace_license_host_estimated_host_units
+  * on (environment_id, host_id) group_left(
+      host_kubernetes_cluster,
+      host_kubernetes_distribution
+    )
+    dynatrace_license_host_kubernetes_info
+)
 ```
 
 Highest contributors in the configured rolling contributor window:

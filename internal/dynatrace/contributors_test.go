@@ -88,10 +88,10 @@ func TestEntitiesPagination(t *testing.T) {
 			if got := r.URL.Query().Get("pageSize"); got != "100" {
 				t.Errorf("page size = %q", got)
 			}
-			if got := r.URL.Query().Get("fields"); got != "" {
-				t.Errorf("fields = %q, want display-name-only response", got)
+			if got := r.URL.Query().Get("fields"); got != "toRelationships.isClusterOfHost" {
+				t.Errorf("fields = %q", got)
 			}
-			_, _ = fmt.Fprint(w, `{"nextPageKey":"page-two","entities":[{"entityId":"HOST-000000000000002A","type":"HOST","displayName":"host-42.example.invalid"}]}`)
+			_, _ = fmt.Fprint(w, `{"nextPageKey":"page-two","entities":[{"entityId":"HOST-000000000000002A","type":"HOST","displayName":"host-42.example.invalid","toRelationships":{"isClusterOfHost":[{"id":"KUBERNETES_CLUSTER-0000000000000001","type":"KUBERNETES_CLUSTER"}]}}]}`)
 			return
 		}
 		if r.URL.Query().Get("nextPageKey") != "page-two" || len(r.URL.Query()) != 1 {
@@ -112,6 +112,37 @@ func TestEntitiesPagination(t *testing.T) {
 	}
 	if requests != 2 || len(entities) != 2 || entities[0].DisplayName != "host-42.example.invalid" || entities[1].DisplayName != "host-43.example.invalid" {
 		t.Fatalf("requests=%d entities=%+v", requests, entities)
+	}
+	relationships := entities[0].ToRelationships["isClusterOfHost"]
+	if len(relationships) != 1 || relationships[0].ID != "KUBERNETES_CLUSTER-0000000000000001" {
+		t.Fatalf("relationships = %+v", relationships)
+	}
+}
+
+func TestKubernetesClusters(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/e/environment-example/api/v2/entities" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("entitySelector"); got != `entityId("KUBERNETES_CLUSTER-0000000000000001")` {
+			t.Errorf("selector = %q", got)
+		}
+		if got := r.URL.Query().Get("fields"); got != "properties.kubernetesDistribution" {
+			t.Errorf("fields = %q", got)
+		}
+		_, _ = fmt.Fprint(w, `{"entities":[{"entityId":"KUBERNETES_CLUSTER-0000000000000001","type":"KUBERNETES_CLUSTER","displayName":"Example Kubernetes Cluster","properties":{"kubernetesDistribution":"KUBERNETES"}}]}`)
+	}))
+	defer server.Close()
+	client, err := NewClient(Config{BaseURL: server.URL, Token: "synthetic-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clusters, err := client.KubernetesClusters(context.Background(), "environment-example", []string{"KUBERNETES_CLUSTER-0000000000000001"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(clusters) != 1 || clusters[0].DisplayName != "Example Kubernetes Cluster" || clusters[0].Properties["kubernetesDistribution"] != "KUBERNETES" {
+		t.Fatalf("clusters = %+v", clusters)
 	}
 }
 
