@@ -241,11 +241,21 @@ Optional per-host metrics:
 
 - `dynatrace_license_host_estimated_host_units{environment_id,environment,host_id,host,monitoring_mode,host_category,paas,has_containers,premium_log_analytics}`
 - `dynatrace_license_host_memory_bytes{environment_id,environment,host_id,host,monitoring_mode,host_category,paas,has_containers,premium_log_analytics}`
+- `dynatrace_license_host_info{environment_id,environment,host_id,host,monitoring_mode,host_unit_band,host_group,network_zone,auto_injection}`
 - `dynatrace_license_host_kubernetes_info{environment_id,environment,host_id,host,host_kubernetes_cluster_entity_id,host_kubernetes_cluster,host_kubernetes_distribution}`
 
 The `host_id` label is always the canonical Dynatrace `HOST-...` entity ID.
 The `host` label is always non-empty and contains the best available display
 name or, as a final fallback, the canonical ID.
+
+`dynatrace_license_host_info` has the constant value `1` and provides bounded
+labels for grouping per-host billing estimates. `host_unit_band` is the
+exporter's estimated HU value formatted as a stable decimal string.
+`auto_injection` is normalized to lower case. Missing Entity API properties use
+the explicit value `unknown`, so host-group and network-zone aggregations retain
+an unattributed bucket and reconcile to total per-host usage. Entity API
+failures retain the most recently resolved metadata and do not fail the billing
+archive refresh.
 
 Exporter self-metrics:
 
@@ -342,6 +352,29 @@ sum by (host_kubernetes_cluster, host_kubernetes_distribution) (
       host_kubernetes_distribution
     )
     dynatrace_license_host_kubernetes_info
+)
+```
+
+Estimated host units grouped by Dynatrace host group:
+
+```promql
+sum by (environment, host_group) (
+  dynatrace_license_host_estimated_host_units
+  * on (environment_id, host_id) group_left(host_group)
+    dynatrace_license_host_info
+)
+```
+
+Estimated host units and host count by HU band:
+
+```promql
+sum by (environment, monitoring_mode, host_unit_band) (
+  dynatrace_license_host_estimated_host_units
+  * on (environment_id, host_id) group_left(host_unit_band)
+    dynatrace_license_host_info
+)
+sum by (environment, monitoring_mode, host_unit_band) (
+  dynatrace_license_host_info
 )
 ```
 

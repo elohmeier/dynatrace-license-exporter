@@ -102,6 +102,7 @@ func TestRefreshCollectAndRetainLastGoodSnapshot(t *testing.T) {
 	hostClient := &fakeHostEntityClient{
 		entities: []dynatrace.Entity{{
 			EntityID: "HOST-000000000000002A", DisplayName: "host-42.example.invalid", Type: "HOST",
+			Properties: map[string]any{"hostGroupName": "Synthetic Host Group", "networkZone": "synthetic-zone", "autoInjection": "ENABLED"},
 			ToRelationships: map[string][]dynatrace.EntityReference{
 				"isClusterOfHost": {{ID: "KUBERNETES_CLUSTER-0000000000000001", Type: "KUBERNETES_CLUSTER"}},
 			},
@@ -142,6 +143,9 @@ dynatrace_license_estimated_host_units{environment="Example",environment_id="env
 # HELP dynatrace_license_host_estimated_host_units Estimated host units for one host in the billing interval.
 # TYPE dynatrace_license_host_estimated_host_units gauge
 dynatrace_license_host_estimated_host_units{environment="Example",environment_id="environment-example",has_containers="true",host="host-42.example.invalid",host_category="",host_id="HOST-000000000000002A",monitoring_mode="full_stack",paas="false",premium_log_analytics="false",site="test"} 0.5
+# HELP dynatrace_license_host_info Billing and bounded Dynatrace metadata for one billed host.
+# TYPE dynatrace_license_host_info gauge
+dynatrace_license_host_info{auto_injection="enabled",environment="Example",environment_id="environment-example",host="host-42.example.invalid",host_group="Synthetic Host Group",host_id="HOST-000000000000002A",host_unit_band="0.5",monitoring_mode="full_stack",network_zone="synthetic-zone",site="test"} 1
 # HELP dynatrace_license_host_kubernetes_info Dynatrace Kubernetes cluster associated with one billed host.
 # TYPE dynatrace_license_host_kubernetes_info gauge
 dynatrace_license_host_kubernetes_info{environment="Example",environment_id="environment-example",host="host-42.example.invalid",host_id="HOST-000000000000002A",host_kubernetes_cluster="Example Kubernetes Cluster",host_kubernetes_cluster_entity_id="KUBERNETES_CLUSTER-0000000000000001",host_kubernetes_distribution="KUBERNETES",site="test"} 1
@@ -150,6 +154,7 @@ dynatrace_license_host_kubernetes_info{environment="Example",environment_id="env
 		"dynatrace_license_davis_data_units",
 		"dynatrace_license_estimated_host_units",
 		"dynatrace_license_host_estimated_host_units",
+		"dynatrace_license_host_info",
 		"dynatrace_license_host_kubernetes_info",
 	); err != nil {
 		t.Fatal(err)
@@ -167,6 +172,7 @@ dynatrace_license_host_kubernetes_info{environment="Example",environment_id="env
 		"dynatrace_license_davis_data_units",
 		"dynatrace_license_estimated_host_units",
 		"dynatrace_license_host_estimated_host_units",
+		"dynatrace_license_host_info",
 		"dynatrace_license_host_kubernetes_info",
 	); err != nil {
 		t.Fatal(err)
@@ -189,6 +195,7 @@ func TestHostEnrichmentFailureRetainsNameAndPublishesFreshBilling(t *testing.T) 
 	hostClient := &fakeHostEntityClient{
 		entities: []dynatrace.Entity{{
 			EntityID: "HOST-0000000000000007", DisplayName: "host-seven.example.invalid", Type: "HOST",
+			Properties: map[string]any{"hostGroupName": "Retained Synthetic Group", "networkZone": "retained-synthetic-zone", "autoInjection": "DISABLED_MANUALLY"},
 			ToRelationships: map[string][]dynatrace.EntityReference{
 				"isClusterOfHost": {{ID: "KUBERNETES_CLUSTER-0000000000000007", Type: "KUBERNETES_CLUSTER"}},
 			},
@@ -230,11 +237,14 @@ func TestHostEnrichmentFailureRetainsNameAndPublishesFreshBilling(t *testing.T) 
 # HELP dynatrace_license_host_estimated_host_units Estimated host units for one host in the billing interval.
 # TYPE dynatrace_license_host_estimated_host_units gauge
 dynatrace_license_host_estimated_host_units{environment="Example",environment_id="environment-example",has_containers="true",host="host-seven.example.invalid",host_category="",host_id="HOST-0000000000000007",monitoring_mode="full_stack",paas="false",premium_log_analytics="false"} 1
+# HELP dynatrace_license_host_info Billing and bounded Dynatrace metadata for one billed host.
+# TYPE dynatrace_license_host_info gauge
+dynatrace_license_host_info{auto_injection="disabled_manually",environment="Example",environment_id="environment-example",host="host-seven.example.invalid",host_group="Retained Synthetic Group",host_id="HOST-0000000000000007",host_unit_band="1",monitoring_mode="full_stack",network_zone="retained-synthetic-zone"} 1
 # HELP dynatrace_license_host_kubernetes_info Dynatrace Kubernetes cluster associated with one billed host.
 # TYPE dynatrace_license_host_kubernetes_info gauge
 dynatrace_license_host_kubernetes_info{environment="Example",environment_id="environment-example",host="host-seven.example.invalid",host_id="HOST-0000000000000007",host_kubernetes_cluster="Retained Example Cluster",host_kubernetes_cluster_entity_id="KUBERNETES_CLUSTER-0000000000000007",host_kubernetes_distribution="OPENSHIFT"} 1
 `
-	if err := testutil.CollectAndCompare(exporter, strings.NewReader(expected), "dynatrace_license_host_estimated_host_units", "dynatrace_license_host_kubernetes_info"); err != nil {
+	if err := testutil.CollectAndCompare(exporter, strings.NewReader(expected), "dynatrace_license_host_estimated_host_units", "dynatrace_license_host_info", "dynatrace_license_host_kubernetes_info"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -275,11 +285,36 @@ func TestReadinessAndDisabledHostMetrics(t *testing.T) {
 	if n := testutil.CollectAndCount(exporter, "dynatrace_license_host_estimated_host_units"); n != 0 {
 		t.Fatalf("per-host metric count = %d, want 0", n)
 	}
+	if n := testutil.CollectAndCount(exporter, "dynatrace_license_host_info"); n != 0 {
+		t.Fatalf("host info metric count = %d, want 0", n)
+	}
 	hostClient.mu.Lock()
 	if hostClient.calls != 0 {
 		t.Fatalf("host entity calls = %d, want 0", hostClient.calls)
 	}
 	hostClient.mu.Unlock()
+}
+
+func TestHostInfoLabels(t *testing.T) {
+	tests := []struct {
+		name  string
+		value float64
+		want  string
+	}{
+		{name: "fraction", value: 0.075, want: "0.075"},
+		{name: "floating point noise", value: 0.8999999999999999, want: "0.9"},
+		{name: "integer", value: 16, want: "16"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hostUnitBandLabel(tt.value); got != tt.want {
+				t.Fatalf("hostUnitBandLabel(%v) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
+	}
+	if got := metadataLabel("  "); got != "unknown" {
+		t.Fatalf("metadataLabel(empty) = %q, want unknown", got)
+	}
 }
 
 func TestSchedulerAndDebugHandler(t *testing.T) {

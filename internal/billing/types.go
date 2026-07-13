@@ -110,7 +110,15 @@ type HostSnapshot struct {
 	PremiumLogAnalytics bool
 	MemoryBytes         int64
 	EstimatedHostUnits  float64
+	Platform            HostPlatformInfo
 	KubernetesCluster   KubernetesClusterInfo
+}
+
+// HostPlatformInfo contains bounded Dynatrace host metadata used for grouping.
+type HostPlatformInfo struct {
+	HostGroup     string
+	NetworkZone   string
+	AutoInjection string
 }
 
 // KubernetesClusterInfo identifies the Dynatrace Kubernetes cluster related to a host.

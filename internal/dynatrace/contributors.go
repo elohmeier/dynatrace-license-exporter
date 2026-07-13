@@ -18,6 +18,7 @@ const (
 	maxEntitySelectorLength = 2000
 	entityPageSize          = 100
 	contributorEntityFields = "properties,tags,managementZones"
+	hostEntityFields        = "properties.hostGroupName,properties.networkZone,properties.autoInjection,toRelationships.isClusterOfHost"
 )
 
 var kubernetesRelationshipFieldsByEntityType = map[string]string{
@@ -150,11 +151,12 @@ func (c *Client) KubernetesRelationships(ctx context.Context, environmentID, ent
 	return c.entities(ctx, environmentID, entityIDs, fields)
 }
 
-// Entities fetches display names and Kubernetes-cluster relationships for hosts.
+// Entities fetches display names, bounded platform metadata, and
+// Kubernetes-cluster relationships for hosts.
 // Dynatrace limits entity selector strings to 2,000 characters, so IDs are
 // de-duplicated, sorted, and split across as many paginated requests as needed.
 func (c *Client) Entities(ctx context.Context, environmentID string, entityIDs []string) ([]Entity, error) {
-	return c.entities(ctx, environmentID, entityIDs, "toRelationships.isClusterOfHost")
+	return c.entities(ctx, environmentID, entityIDs, hostEntityFields)
 }
 
 // KubernetesClusters fetches display names and distributions for cluster entities.

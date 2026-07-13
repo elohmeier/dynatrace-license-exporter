@@ -119,10 +119,10 @@ func TestEntitiesPagination(t *testing.T) {
 			if got := r.URL.Query().Get("pageSize"); got != "100" {
 				t.Errorf("page size = %q", got)
 			}
-			if got := r.URL.Query().Get("fields"); got != "toRelationships.isClusterOfHost" {
+			if got := r.URL.Query().Get("fields"); got != hostEntityFields {
 				t.Errorf("fields = %q", got)
 			}
-			_, _ = fmt.Fprint(w, `{"nextPageKey":"page-two","entities":[{"entityId":"HOST-000000000000002A","type":"HOST","displayName":"host-42.example.invalid","toRelationships":{"isClusterOfHost":[{"id":"KUBERNETES_CLUSTER-0000000000000001","type":"KUBERNETES_CLUSTER"}]}}]}`)
+			_, _ = fmt.Fprint(w, `{"nextPageKey":"page-two","entities":[{"entityId":"HOST-000000000000002A","type":"HOST","displayName":"host-42.example.invalid","properties":{"hostGroupName":"Synthetic Host Group","networkZone":"synthetic-zone","autoInjection":"ENABLED"},"toRelationships":{"isClusterOfHost":[{"id":"KUBERNETES_CLUSTER-0000000000000001","type":"KUBERNETES_CLUSTER"}]}}]}`)
 			return
 		}
 		if r.URL.Query().Get("nextPageKey") != "page-two" || len(r.URL.Query()) != 1 {
@@ -147,6 +147,9 @@ func TestEntitiesPagination(t *testing.T) {
 	relationships := entities[0].ToRelationships["isClusterOfHost"]
 	if len(relationships) != 1 || relationships[0].ID != "KUBERNETES_CLUSTER-0000000000000001" {
 		t.Fatalf("relationships = %+v", relationships)
+	}
+	if entities[0].Properties["hostGroupName"] != "Synthetic Host Group" || entities[0].Properties["networkZone"] != "synthetic-zone" || entities[0].Properties["autoInjection"] != "ENABLED" {
+		t.Fatalf("properties = %+v", entities[0].Properties)
 	}
 }
 

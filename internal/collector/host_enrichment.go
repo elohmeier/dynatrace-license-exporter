@@ -25,6 +25,7 @@ type HostTarget struct {
 type hostNameEnricher struct {
 	targets        map[string]HostEntityClient
 	names          map[string]string
+	platformByHost map[string]billing.HostPlatformInfo
 	clusterByHost  map[string]string
 	clusterDetails map[string]billing.KubernetesClusterInfo
 	logger         *slog.Logger
@@ -40,6 +41,7 @@ func newHostNameEnricher(targets []HostTarget, logger *slog.Logger) *hostNameEnr
 	return &hostNameEnricher{
 		targets:        clients,
 		names:          make(map[string]string),
+		platformByHost: make(map[string]billing.HostPlatformInfo),
 		clusterByHost:  make(map[string]string),
 		clusterDetails: make(map[string]billing.KubernetesClusterInfo),
 		logger:         logger,
@@ -77,6 +79,11 @@ func (e *hostNameEnricher) enrich(ctx context.Context, snapshot *billing.Snapsho
 					name := strings.TrimSpace(entity.DisplayName)
 					if name != "" {
 						e.names[key] = name
+					}
+					e.platformByHost[key] = billing.HostPlatformInfo{
+						HostGroup:     stringProperty(entity.Properties, "hostGroupName"),
+						NetworkZone:   stringProperty(entity.Properties, "networkZone"),
+						AutoInjection: normalizedProperty(entity.Properties, "autoInjection"),
 					}
 					if clusterID := kubernetesClusterEntityID(entity); clusterID != "" {
 						e.clusterByHost[key] = clusterID
@@ -126,6 +133,9 @@ func (e *hostNameEnricher) enrich(ctx context.Context, snapshot *billing.Snapsho
 			if strings.TrimSpace(host.Name) == "" {
 				host.Name = host.ID
 			}
+			if platform, ok := e.platformByHost[key]; ok {
+				host.Platform = platform
+			}
 			if clusterID := e.clusterByHost[key]; clusterID != "" {
 				clusterKey := entityKey(environment.ID, clusterID)
 				activeClusters[clusterKey] = true
@@ -138,6 +148,11 @@ func (e *hostNameEnricher) enrich(ctx context.Context, snapshot *billing.Snapsho
 	for key := range e.names {
 		if !activeHosts[key] {
 			delete(e.names, key)
+		}
+	}
+	for key := range e.platformByHost {
+		if !activeHosts[key] {
+			delete(e.platformByHost, key)
 		}
 	}
 	for key := range e.clusterByHost {
@@ -172,6 +187,10 @@ func kubernetesClusterEntityID(entity dynatrace.Entity) string {
 func stringProperty(properties map[string]any, key string) string {
 	value, _ := properties[key].(string)
 	return strings.TrimSpace(value)
+}
+
+func normalizedProperty(properties map[string]any, key string) string {
+	return strings.ToLower(stringProperty(properties, key))
 }
 
 func entityKey(environmentID, entityID string) string {
