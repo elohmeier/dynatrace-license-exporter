@@ -65,7 +65,8 @@ func TestMuxHealthAndIndex(t *testing.T) {
 	cfg := config.Default()
 	cfg.URL = "https://tenant.example.invalid"
 	exporter := collector.New(cfg, nil, nil, nil)
-	mux := newMux(prometheus.NewRegistry(), exporter, nil)
+	clusterLicense := collector.NewClusterLicenseExporter(cfg, nil, nil)
+	mux := newMux(prometheus.NewRegistry(), exporter, clusterLicense, nil)
 	for _, path := range []string{"/health", "/healthz"} {
 		recorder := httptest.NewRecorder()
 		mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
@@ -82,5 +83,10 @@ func TestMuxHealthAndIndex(t *testing.T) {
 	mux.ServeHTTP(notFound, httptest.NewRequest(http.MethodGet, "/debug/contributors", nil))
 	if notFound.Code != http.StatusNotFound {
 		t.Fatalf("disabled contributor endpoint = %d", notFound.Code)
+	}
+	licenseDebug := httptest.NewRecorder()
+	mux.ServeHTTP(licenseDebug, httptest.NewRequest(http.MethodGet, "/debug/license", nil))
+	if licenseDebug.Code != http.StatusOK || !strings.Contains(licenseDebug.Body.String(), `"collector":"cluster_license"`) {
+		t.Fatalf("license debug endpoint = %d %q", licenseDebug.Code, licenseDebug.Body.String())
 	}
 }

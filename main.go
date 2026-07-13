@@ -176,19 +176,22 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	exporter := collector.New(cfg, client, hostTargets, logger)
+	clusterLicenseExporter := collector.NewClusterLicenseExporter(cfg, client, logger)
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	registry.MustRegister(apiMetrics.Collectors()...)
+	licenseCollectors := []prometheus.Collector{exporter, clusterLicenseExporter}
 	if contributorExporter != nil {
-		registry.MustRegister(collector.Combine(exporter, contributorExporter))
-	} else {
-		registry.MustRegister(exporter)
+		licenseCollectors = append(licenseCollectors, contributorExporter)
 	}
+	registry.MustRegister(collector.Combine(licenseCollectors...))
 
 	appCtx, appCancel := context.WithCancel(context.Background())
 	defer appCancel()
 	exporter.Start(appCtx)
 	defer exporter.Stop()
+	clusterLicenseExporter.Start(appCtx)
+	defer clusterLicenseExporter.Stop()
 	if contributorExporter != nil {
 		contributorExporter.Start(appCtx)
 		defer contributorExporter.Stop()
@@ -196,7 +199,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	server := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.BindPort),
-		Handler:           newMux(registry, exporter, contributorExporter),
+		Handler:           newMux(registry, exporter, clusterLicenseExporter, contributorExporter),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -222,6 +225,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	appCancel()
 	exporter.Stop()
+	clusterLicenseExporter.Stop()
 	if contributorExporter != nil {
 		contributorExporter.Stop()
 	}
@@ -234,7 +238,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func newMux(registry *prometheus.Registry, exporter *collector.Exporter, contributors *collector.ContributorExporter) *http.ServeMux {
+func newMux(registry *prometheus.Registry, exporter *collector.Exporter, clusterLicense *collector.ClusterLicenseExporter, contributors *collector.ContributorExporter) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 	health := func(w http.ResponseWriter, _ *http.Request) {
@@ -246,6 +250,9 @@ func newMux(registry *prometheus.Registry, exporter *collector.Exporter, contrib
 	mux.HandleFunc("/healthz", health)
 	mux.HandleFunc("/readyz", exporter.ReadyHandler)
 	mux.HandleFunc("/debug/cache", exporter.DebugCacheHandler)
+	if clusterLicense != nil {
+		mux.HandleFunc("/debug/license", clusterLicense.DebugCacheHandler)
+	}
 	if contributors != nil {
 		mux.HandleFunc("/debug/contributors", contributors.DebugCacheHandler)
 	}
@@ -255,7 +262,7 @@ func newMux(registry *prometheus.Registry, exporter *collector.Exporter, contrib
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = w.Write([]byte(app + "\n\n/metrics\n/healthz\n/readyz\n/debug/cache\n/debug/contributors\n"))
+		_, _ = w.Write([]byte(app + "\n\n/metrics\n/healthz\n/readyz\n/debug/cache\n/debug/license\n/debug/contributors\n"))
 	})
 	return mux
 }

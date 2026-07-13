@@ -9,7 +9,8 @@
 Prometheus exporter for Dynatrace Managed license-consumption records. It
 downloads a short, overlapping window from the cluster license API, parses the
 nested billing archive, selects the newest settled hourly record, and exposes
-the result from an in-memory cache.
+the result from an in-memory cache. It also independently retrieves the current
+cluster-wide HU, DEM, and DDU contract quotas and billed usage.
 
 Prometheus scrapes never call Dynatrace. A failed refresh retains the last good
 snapshot; `/readyz` reports whether that snapshot is still fresh.
@@ -27,7 +28,9 @@ normalized to canonical `HOST-<16 hexadecimal digits>` entity IDs.
 
 - A Dynatrace Managed cluster API URL.
 - A cluster API token allowed to read
-  `/api/cluster/v2/license/consumption`.
+  `/api/cluster/v2/license/consumption` and
+  `/api/cluster/v2/clusterLicense`.
+- Dynatrace Managed 1.326 or newer for cluster quota and billed-usage metrics.
 - Optional environment API tokens with `entities.read` for host-name
   enrichment, and permission to read metrics when contributor collection is
   enabled.
@@ -70,6 +73,12 @@ The default refresh interval is one hour and the default settlement delay is
 within the latest two hours; the extra five minutes avoids boundary races.
 Overlap allows corrected or delayed billing records to be picked up by a later
 refresh.
+
+The cluster license summary is refreshed on the same schedule through
+`/api/cluster/v2/clusterLicense`, but uses an independent cache. A failure of
+that endpoint retains its last good quota snapshot and does not affect billing
+archive readiness. Account names, contacts, cluster identifiers, and license
+keys returned by Dynatrace are neither modeled nor exported.
 
 ### Estimation formulas
 
@@ -208,6 +217,20 @@ Billing interval and aggregate metrics:
 - `dynatrace_license_synthetic_executions{environment_id,environment,test_id,monitor_type,location}`
 - `dynatrace_license_synthetic_estimated_dem_units{environment_id,environment,test_id,monitor_type}`
 
+Cluster-wide contract metrics from the Cluster API:
+
+- `dynatrace_license_quota{product}`
+- `dynatrace_license_billed_usage{product}`
+- `dynatrace_license_remaining{product}`
+- `dynatrace_license_usage_ratio{product}`
+- `dynatrace_license_usage_status_info{product,status}`
+- `dynatrace_license_last_billing_timestamp_seconds`
+- `dynatrace_license_expiration_timestamp_seconds`
+
+The `product` label is one of `host_units`, `dem_units`, or `ddu_units`.
+`dynatrace_license_usage_ratio` is expressed as a fraction, where `1` means
+100 percent of the quota.
+
 Optional per-host metrics:
 
 - `dynatrace_license_host_estimated_host_units{environment_id,environment,host_id,host,monitoring_mode,host_category,paas,has_containers,premium_log_analytics}`
@@ -250,6 +273,9 @@ self-metrics. A failed contributor refresh retains its previous complete
 snapshot and does not affect `/readyz`, which represents the required cluster
 billing collector.
 
+The cluster license summary likewise reports `collector="cluster_license"`.
+Its failures do not affect `/readyz` or the billing archive snapshot.
+
 Host-unit and DEM values are explicitly named `estimated`: the archive
 contains their billing inputs, while the exporter applies documented conversion
 rules. DDU pool values are exported directly from the archive. All billing
@@ -264,6 +290,14 @@ Current aggregate usage by environment:
 sum by (environment) (dynatrace_license_estimated_host_units)
 sum by (environment) (dynatrace_license_estimated_dem_units)
 sum by (environment, pool) (dynatrace_license_davis_data_units)
+```
+
+Authoritative cluster-wide host-unit quota and utilization:
+
+```promql
+max(dynatrace_license_quota{product="host_units"})
+max(dynatrace_license_billed_usage{product="host_units"})
+  / max(dynatrace_license_quota{product="host_units"})
 ```
 
 Highest current host consumers:
@@ -296,6 +330,7 @@ avg_over_time(
 | `/health` and `/healthz` | Process liveness. |
 | `/readyz` | HTTP 200 only when a non-stale snapshot exists. |
 | `/debug/cache` | Cache timestamps, age, errors, and billing period; never includes credentials or payload records. |
+| `/debug/license` | Cluster-license cache status without account, environment, contact, or license-key data. |
 | `/debug/contributors` | Contributor cache status when the optional module is configured. |
 
 ## Container
